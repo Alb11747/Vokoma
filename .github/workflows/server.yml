@@ -1,0 +1,27 @@
+name: Server
+on:
+  pull_request:
+    paths: ['server/**', 'contracts/**', 'deploy/**', '.dockerignore', '.github/workflows/server.yml']
+  push:
+    paths: ['server/**', 'contracts/**', 'deploy/**', '.dockerignore', '.github/workflows/server.yml']
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: server/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - run: pnpm install --frozen-lockfile
+        working-directory: server
+      - run: pnpm check
+        working-directory: server
+      - run: docker build -f server/Dockerfile -t vokoma:check .
