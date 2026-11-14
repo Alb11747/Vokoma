@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
+import type { BigIntStats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { Database } from "../db.js";
 import type { FileRow } from "../library/files.js";
-import { metadataSchema } from "../schemas.js";
+import { metadataSchema, type Metadata } from "../schemas.js";
+import { concurrencyLimit } from "../concurrency.js";
 import { HttpError } from "../errors.js";
 const stream = z.object({
   index: z.number(),
@@ -20,7 +22,11 @@ const stream = z.object({
     .object({ language: z.string().optional(), title: z.string().optional() })
     .optional(),
   disposition: z
-    .object({ default: z.number().optional(), forced: z.number().optional() })
+    .object({
+      default: z.number().optional(),
+      forced: z.number().optional(),
+      attached_pic: z.number().optional(),
+    })
     .optional(),
 });
 const probeSchema = z.object({
@@ -39,7 +45,15 @@ const probeSchema = z.object({
     )
     .default([]),
 });
-export async function probe(db: Database, row: FileRow, handle: FileHandle) {
+// Concurrent requests for one file share a single ffprobe run, and at most three
+// run at once across the process.
+const inFlight = new Map<string, Promise<Metadata>>();
+const limit = concurrencyLimit(3);
+export async function probe(
+  db: Database,
+  row: FileRow,
+  handle: FileHandle,
+): Promise<Metadata> {
   const stat = await handle.stat({ bigint: true });
   if (
     row.probe &&
@@ -47,6 +61,21 @@ export async function probe(db: Database, row: FileRow, handle: FileHandle) {
     row.mtime === stat.mtimeNs.toString()
   )
     return metadataSchema.parse(JSON.parse(row.probe));
+  let pending = inFlight.get(row.id);
+  if (!pending) {
+    pending = limit(() => run(db, row, handle, stat)).finally(() =>
+      inFlight.delete(row.id),
+    );
+    inFlight.set(row.id, pending);
+  }
+  return pending;
+}
+async function run(
+  db: Database,
+  row: FileRow,
+  handle: FileHandle,
+  stat: BigIntStats,
+) {
   const output = await new Promise<string>((resolve, reject) => {
     // Inherit only this read-only descriptor. ffprobe never resolves the library path again.
     const child = spawn(
@@ -89,7 +118,10 @@ export async function probe(db: Database, row: FileRow, handle: FileHandle) {
     });
   });
   const p = probeSchema.parse(JSON.parse(output));
-  const video = p.streams.find((s) => s.codec_type === "video");
+  // Cover art is stored as a video stream marked attached_pic; skip it.
+  const video = p.streams.find(
+    (s) => s.codec_type === "video" && s.disposition?.attached_pic !== 1,
+  );
   const track = (s: z.infer<typeof stream>) => ({
     index: s.index,
     codec: s.codec_name,

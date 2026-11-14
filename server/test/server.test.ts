@@ -10,7 +10,10 @@ import {
   utimes,
   rm,
   rename,
+  chmod,
+  truncate,
 } from "node:fs/promises";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -129,12 +132,58 @@ before(async () => {
     path.join(root, "escape.mp4"),
   );
   await symlink(scratch, path.join(root, "escape"));
+  // Folder 10 holds entries that must not break a listing, and symlinks that stay inside.
+  const odd = path.join(root, "Folder 10");
+  await writeFile(
+    Buffer.concat([
+      Buffer.from(odd + "/bad "),
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from(".mkv"),
+    ]),
+    "x",
+  );
+  await writeFile(path.join(odd, "locked.mkv"), "x");
+  await chmod(path.join(odd, "locked.mkv"), 0);
+  await writeFile(path.join(odd, ".hidden.mkv"), "x");
+  await mkdir(path.join(odd, ".hidden folder"));
+  await symlink("../Folder 2", path.join(odd, "linked folder"));
+  await symlink("../Folder 2/sample.ts", path.join(odd, "linked.ts"));
+  await symlink("missing.mkv", path.join(odd, "dangling.mkv"));
+  // ffprobe reports a Matroska cover attachment as a video stream marked attached_pic.
+  const cover = path.join(scratch, "cover.jpg");
+  execFileSync("ffmpeg", [
+    "-v",
+    "error",
+    "-f",
+    "lavfi",
+    "-i",
+    "color=size=16x16",
+    "-frames:v",
+    "1",
+    cover,
+  ]);
+  execFileSync("ffmpeg", [
+    "-v",
+    "error",
+    "-i",
+    fixture,
+    "-map",
+    "0:a",
+    "-c",
+    "copy",
+    "-attach",
+    cover,
+    "-metadata:s:t",
+    "mimetype=image/jpeg",
+    path.join(odd, "cover.mkv"),
+  ]);
   const big = await open(path.join(root, "large.ts"), "w");
   await big.truncate(2 ** 32 + 7);
   await big.write(Buffer.from("END"), 0, 3, 2 ** 32 + 4);
   await big.close();
   config = {
     listen: { host: "127.0.0.1", port: 3000 },
+    trustProxy: false,
     dataDirectory: path.join(scratch, "data"),
     account: {
       username: "placeholder",
@@ -160,7 +209,6 @@ test("public server, auth required everywhere else, validation and error shape",
     "/api/roots",
     "/api/files/unknown",
     "/api/files/unknown/content",
-    "/health",
   ])
     assert.equal((await app.inject(url)).statusCode, 401);
   const invalid = await app.inject({
@@ -170,6 +218,13 @@ test("public server, auth required everywhere else, validation and error shape",
   });
   assert.equal(invalid.statusCode, 400);
   assert.equal(invalid.json().error.code, "invalid_request");
+  const large = await app.inject({
+    method: "POST",
+    url: "/api/auth/login",
+    payload: { password: "x".repeat(20_000) },
+  });
+  assert.equal(large.statusCode, 413);
+  assert.equal(large.json().error.code, "payload_too_large");
   const wrong = await app.inject({
     method: "POST",
     url: "/api/auth/login",
@@ -202,20 +257,43 @@ test("public server, auth required everywhere else, validation and error shape",
     401,
   );
 });
-test("refresh rotates once, concurrent replay fails and logout revokes only this device", async () => {
+test("refresh rotates, the previous token works for 60 s, and logout revokes only this device", async () => {
   const first = (await login()).json(),
     second = (await login()).json();
-  const refresh = () =>
+  const refresh = (refreshToken: string) =>
     app.inject({
       method: "POST",
       url: "/api/auth/refresh",
-      payload: { refreshToken: first.refreshToken },
+      payload: { refreshToken },
     });
-  const results = await Promise.all([refresh(), refresh()]);
-  assert.deepEqual(results.map((r) => r.statusCode).sort(), [200, 401]);
-  const rotated = results.find((r) => r.statusCode === 200)!.json();
+  // A lost response or a concurrent retry gets the same rotated token.
+  const results = await Promise.all([
+    refresh(first.refreshToken),
+    refresh(first.refreshToken),
+  ]);
+  assert.deepEqual(
+    results.map((r) => r.statusCode),
+    [200, 200],
+  );
+  const rotated = results[0]!.json();
   assert.equal(rotated.deviceId, first.deviceId);
   assert.notEqual(rotated.refreshToken, first.refreshToken);
+  assert.equal(results[1]!.json().refreshToken, rotated.refreshToken);
+  // Once the new token has been used, the old one no longer works.
+  const next = (await refresh(rotated.refreshToken)).json();
+  assert.equal((await refresh(first.refreshToken)).statusCode, 401);
+  // After the grace period the previous token is refused.
+  const db = openDatabase(path.join(config.dataDirectory, "vokoma.sqlite"));
+  try {
+    db.prepare("UPDATE device SET previous_refresh_until=? WHERE id=?").run(
+      Date.now() - 1,
+      first.deviceId,
+    );
+  } finally {
+    db.close();
+  }
+  assert.equal((await refresh(rotated.refreshToken)).statusCode, 401);
+  assert.equal((await refresh(next.refreshToken)).statusCode, 200);
   assert.equal(
     (
       await app.inject({
@@ -240,7 +318,7 @@ test("refresh rotates once, concurrent replay fails and logout revokes only this
       await app.inject({
         method: "POST",
         url: "/api/auth/refresh",
-        payload: { refreshToken: rotated.refreshToken },
+        payload: { refreshToken: next.refreshToken },
       })
     ).statusCode,
     401,
@@ -254,6 +332,87 @@ test("refresh rotates once, concurrent replay fails and logout revokes only this
     ).statusCode,
     200,
   );
+});
+test("one bad entry does not break a listing; symlinks inside the root work", async () => {
+  const res = await list("Folder 10/");
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().path, "Folder 10");
+  const names = res.json().entries.map((e: { name: string }) => e.name);
+  // locked.mkv is readable anyway when the tests run as root.
+  const expected = ["linked folder", "cover.mkv", "linked.ts"];
+  if (process.getuid?.() !== 0) assert.deepEqual(names, expected);
+  else
+    assert.deepEqual(
+      names.filter((n: string) => n !== "locked.mkv"),
+      expected,
+    );
+  assert.equal((await list("Folder 10/linked folder")).statusCode, 200);
+  const linked = res
+    .json()
+    .entries.find((e: { name: string }) => e.name === "linked.ts");
+  assert.equal(
+    (await app.inject({ url: `/api/files/${linked.fileId}/content`, headers }))
+      .statusCode,
+    200,
+  );
+  assert.equal((await list("./Folder 2//")).json().path, "Folder 2");
+});
+test("cover art is not chosen as the video stream", async () => {
+  const cover = (await list("Folder 10"))
+    .json()
+    .entries.find((e: { name: string }) => e.name === "cover.mkv");
+  const data = (
+    await app.inject({ url: `/api/files/${cover.fileId}`, headers })
+  ).json();
+  assert.equal(data.audioTracks.length, 1);
+  assert.equal(data.video, null);
+});
+test("concurrent probes of one file share one ffprobe run; a missing ffprobe is a 500", async () => {
+  await writeFile(
+    path.join(root, "Folder 2", "copy.ts"),
+    await readFile(path.join(root, "Folder 2", "sample.ts")),
+  );
+  await writeFile(
+    path.join(root, "Folder 2", "copy 2.ts"),
+    await readFile(path.join(root, "Folder 2", "sample.ts")),
+  );
+  const entries = (await list("Folder 2")).json().entries;
+  const id = (name: string) =>
+    entries.find((e: { name: string }) => e.name === name).fileId;
+  const bin = path.join(scratch, "bin"),
+    calls = path.join(scratch, "ffprobe-calls");
+  await mkdir(bin);
+  const real = execFileSync("sh", ["-c", "command -v ffprobe"], {
+    encoding: "utf8",
+  }).trim();
+  await writeFile(
+    path.join(bin, "ffprobe"),
+    `#!/bin/sh\necho run >> '${calls}'\nexec '${real}' "$@"\n`,
+    { mode: 0o755 },
+  );
+  const previousPath = process.env.PATH;
+  try {
+    process.env.PATH = bin;
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        app.inject({ url: `/api/files/${id("copy.ts")}`, headers }),
+      ),
+    );
+    assert.deepEqual(new Set(results.map((r) => r.statusCode)), new Set([200]));
+    assert.equal(
+      (await readFile(calls, "utf8")).split("\n").filter(Boolean).length,
+      1,
+    );
+    process.env.PATH = "";
+    const missing = await app.inject({
+      url: `/api/files/${id("copy 2.ts")}`,
+      headers,
+    });
+    assert.equal(missing.statusCode, 500);
+    assert.equal(missing.json().error.code, "internal_error");
+  } finally {
+    process.env.PATH = previousPath;
+  }
 });
 test("natural listing hides nonmedia, empty files and symlinks; probes are lazy and cached", async () => {
   const res = await list();
@@ -373,14 +532,25 @@ test("single, open-ended, suffix and invalid ranges, HEAD, and offsets beyond 4 
       `bytes ${start}-${end}/${file.sizeBytes}`,
     );
   }
+  const upper = await app.inject({
+    url,
+    headers: { ...headers, range: "BYTES=0-9" },
+  });
+  assert.equal(upper.statusCode, 206);
+  assert.equal(upper.rawPayload.length, 10);
+  // RFC 9110: an invalid, multi-range or other-unit header is ignored.
   for (const range of [
-    "bytes=999999-",
     "bytes=5-2",
-    "bytes=-0",
     "bytes=0-1,4-5",
     "bytes=-",
     "garbage",
+    "items=0-1",
   ]) {
+    const res = await app.inject({ url, headers: { ...headers, range } });
+    assert.equal(res.statusCode, 200, range);
+    assert.equal(res.rawPayload.length, file.sizeBytes, range);
+  }
+  for (const range of ["bytes=999999-", "bytes=-0"]) {
     const res = await app.inject({ url, headers: { ...headers, range } });
     assert.equal(res.statusCode, 416, range);
     assert.equal(res.headers["content-range"], `bytes */${file.sizeBytes}`);
@@ -452,19 +622,96 @@ test("probe failures are explicit and sanitized", async () => {
   assert.ok(!response.body.includes(scratch));
 });
 
-test("configuration refuses database writes inside a media root", async () => {
-  await assert.rejects(
-    buildApp({ ...config, dataDirectory: path.join(root, "database") }),
-    /outside media roots/,
-  );
+test("login limiter counts only failures per client and clears on success", async () => {
+  const attempt = (
+    password: string,
+    remoteAddress: string,
+    forwarded?: string,
+    target = app,
+  ) =>
+    target
+      .inject({
+        method: "POST",
+        url: "/api/auth/login",
+        remoteAddress,
+        headers: forwarded ? { "x-forwarded-for": forwarded } : {},
+        payload: {
+          username: "placeholder",
+          password,
+          deviceName: "test",
+          platform: "test",
+        },
+      })
+      .then((r) => r.statusCode);
+  const a = "192.0.2.1";
+  for (let i = 0; i < 4; i++) assert.equal(await attempt("wrong", a), 401);
+  assert.equal(await attempt("test-password", a), 200);
+  for (let i = 0; i < 5; i++) assert.equal(await attempt("wrong", a), 401);
+  assert.equal(await attempt("wrong", a), 429);
+  assert.equal(await attempt("test-password", a), 429);
+  // Successful logins do not count; another client is unaffected.
+  for (let i = 0; i < 7; i++)
+    assert.equal(await attempt("test-password", "192.0.2.2"), 200);
+  // Behind a trusted proxy, clients are told apart by X-Forwarded-For.
+  const proxied = await buildApp({ ...config, trustProxy: "192.0.2.10" });
+  try {
+    for (let i = 0; i < 6; i++)
+      await attempt("wrong", "192.0.2.10", "198.51.100.1", proxied);
+    assert.equal(
+      await attempt("wrong", "192.0.2.10", "198.51.100.1", proxied),
+      429,
+    );
+    assert.equal(
+      await attempt("test-password", "192.0.2.10", "198.51.100.2", proxied),
+      200,
+    );
+  } finally {
+    await proxied.close();
+  }
 });
-
-test("login limiter returns 429", async () => {
-  let res;
-  for (let i = 0; i < 6; i++) res = await login();
-  assert.equal(res!.statusCode, 429);
-});
-test("config loads a key file and environment overrides", async () => {
+test(
+  "a file that shrinks during a download closes the connection",
+  { timeout: 10_000 },
+  async () => {
+    const file = path.join(root, "Folder 2", "shrinking.mkv");
+    await writeFile(file, Buffer.alloc(8 * 1024 * 1024, 1));
+    const id = (await list("Folder 2"))
+      .json()
+      .entries.find((e: { name: string }) => e.name === "shrinking.mkv").fileId;
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const { port } = app.server.address() as { port: number };
+    const received = await new Promise<{ bytes: number; complete: boolean }>(
+      (resolve, reject) => {
+        const req = http.get(
+          {
+            host: "127.0.0.1",
+            port,
+            path: `/api/files/${id}/content`,
+            headers,
+            agent: new http.Agent({ keepAlive: true }),
+          },
+          (res) => {
+            let bytes = 0;
+            res.once("data", (chunk: Buffer) => {
+              bytes += chunk.length;
+              res.pause();
+              void truncate(file, 1024).then(() => {
+                res.on("data", (c: Buffer) => (bytes += c.length));
+                res.resume();
+              });
+            });
+            res.on("error", () => {});
+            res.on("close", () => resolve({ bytes, complete: res.complete }));
+          },
+        );
+        req.on("error", reject);
+      },
+    );
+    assert.equal(received.complete, false);
+    assert.ok(received.bytes < 8 * 1024 * 1024);
+  },
+);
+test("config loads the token secret from a key file", async () => {
   const file = path.join(scratch, "config.json"),
     keyFile = path.join(scratch, "secret");
   await writeFile(keyFile, config.tokenSecret + "\n");
@@ -476,12 +723,5 @@ test("config loads a key file and environment overrides", async () => {
       tokenSecretFile: keyFile,
     }),
   );
-  process.env.VOKOMA_PORT = "4321";
-  try {
-    const loaded = await loadConfig(file);
-    assert.equal(loaded.listen.port, 4321);
-    assert.equal(loaded.tokenSecret, config.tokenSecret);
-  } finally {
-    delete process.env.VOKOMA_PORT;
-  }
+  assert.equal((await loadConfig(file)).tokenSecret, config.tokenSecret);
 });

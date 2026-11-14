@@ -7,7 +7,8 @@ import {
   type ZodTypeProvider,
 } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { mkdir, realpath } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { Config } from "./config.js";
 import { rootSchema } from "./config.js";
@@ -15,7 +16,7 @@ import { openDatabase } from "./db.js";
 import { Auth } from "./auth.js";
 import { Files } from "./library/files.js";
 import { probe } from "./media/probe.js";
-import { NodeContentSender, type ContentSender } from "./media/content.js";
+import { sendContent } from "./media/content.js";
 import { HttpError } from "./errors.js";
 import {
   errorSchema,
@@ -24,13 +25,28 @@ import {
   metadataSchema,
   listingSchema,
 } from "./schemas.js";
+// package.json sits one level above both src/ and dist/.
+const { version } = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+) as { version: string };
+declare module "fastify" {
+  interface FastifyRequest {
+    deviceId: string;
+  }
+}
+const statusCodes: Record<number, string> = {
+  400: "invalid_request",
+  401: "unauthorized",
+  403: "forbidden",
+  404: "not_found",
+  413: "payload_too_large",
+  415: "unsupported_media_type",
+  416: "invalid_range",
+  429: "rate_limited",
+};
 export async function buildApp(
   config: Config,
-  options: {
-    logger?: boolean;
-    contractOnly?: boolean;
-    contentSender?: ContentSender;
-  } = {},
+  options: { logger?: boolean; contractOnly?: boolean } = {},
 ) {
   const app = Fastify({
     logger: options.logger
@@ -43,14 +59,14 @@ export async function buildApp(
         }
       : false,
     logController: new LogController({ disableRequestLogging: true }),
-    routerOptions: { maxParamLength: 4096 },
+    trustProxy: config.trustProxy,
     bodyLimit: 16 * 1024,
   }).withTypeProvider<ZodTypeProvider>();
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   await app.register(swagger, {
     openapi: {
-      info: { title: "Vokoma M0 API", version: "1.0.0" },
+      info: { title: "Vokoma M0 API", version },
       components: {
         securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } },
       },
@@ -58,28 +74,8 @@ export async function buildApp(
     },
     transform: jsonSchemaTransform,
   });
-  if (!options.contractOnly) {
-    // Resolve existing ancestors before creating anything: configuration must never
-    // redirect database writes into a media root, including via a symlink.
-    const destination = async (location: string): Promise<string> => {
-      try {
-        return await realpath(location);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        return path.join(
-          await destination(path.dirname(location)),
-          path.basename(location),
-        );
-      }
-    };
-    const data = await destination(path.resolve(config.dataDirectory));
-    for (const root of config.roots) {
-      const media = await realpath(root.path);
-      if (data === media || data.startsWith(media + path.sep))
-        throw new Error("Data directory must be outside media roots");
-    }
+  if (!options.contractOnly)
     await mkdir(config.dataDirectory, { recursive: true });
-  }
   const db = openDatabase(
     options.contractOnly
       ? ":memory:"
@@ -89,54 +85,33 @@ export async function buildApp(
     db.close();
   });
   const auth = new Auth(db, config),
-    files = new Files(config, db),
-    sender = options.contentSender ?? new NodeContentSender();
+    files = new Files(config, db, app.log);
   app.setErrorHandler((error, request, reply) => {
-    const err = error as Error & {
-      code?: string;
-      statusCode?: number;
-      validation?: unknown;
-    };
+    const err = error as Error & { statusCode?: number; validation?: unknown };
+    // Only HttpError and Fastify's own 4xx errors reach the client as such; any
+    // other failure is a server fault, logged in full.
     const status = err.validation
       ? 400
       : err instanceof HttpError
         ? err.statusCode
-        : err.code === "ENOENT" || err.code === "ENOTDIR"
-          ? 404
-          : err.code === "ELOOP" || err.code === "EACCES"
-            ? 403
-            : err.statusCode && err.statusCode < 500
-              ? err.statusCode
-              : 500;
-    if (status >= 500)
-      app.log.error({ code: err.code ?? "internal_error" }, "Request failed");
+        : err.statusCode && err.statusCode >= 400 && err.statusCode < 500
+          ? err.statusCode
+          : 500;
+    if (status >= 500) request.log.error({ err }, "Request failed");
     reply.removeHeader("Content-Length");
     reply
       .code(status)
       .type("application/json")
       .send({
-        error: {
-          code:
-            err instanceof HttpError
-              ? err.code
-              : status === 400
-                ? "invalid_request"
-                : status === 404
-                  ? "not_found"
-                  : status === 403
-                    ? "forbidden"
-                    : "internal_error",
-          message:
-            err instanceof HttpError
-              ? err.message
-              : status === 400
-                ? "Invalid request"
-                : status === 404
-                  ? "Not found"
-                  : status === 403
-                    ? "Access refused"
-                    : "Request failed",
-        },
+        error:
+          err instanceof HttpError
+            ? { code: err.code, message: err.message }
+            : status >= 500
+              ? { code: "internal_error", message: "Request failed" }
+              : {
+                  code: statusCodes[status] ?? "invalid_request",
+                  message: err.validation ? "Invalid request" : err.message,
+                },
       });
   });
   app.setNotFoundHandler((_req, reply) =>
@@ -153,8 +128,9 @@ export async function buildApp(
     429: errorSchema,
     500: errorSchema,
   };
+  app.decorateRequest("deviceId", "");
   const secured = async (request: import("fastify").FastifyRequest) => {
-    await auth.authorize(request.headers.authorization);
+    request.deviceId = await auth.authorize(request.headers.authorization);
   };
   app.get(
     "/api/server",
@@ -170,12 +146,7 @@ export async function buildApp(
         },
       },
     },
-    async () => ({ name: "Vokoma", version: "0.0.0", apiVersion: 1 }),
-  );
-  app.get(
-    "/health",
-    { schema: { hide: true }, preHandler: secured },
-    async () => ({ status: "ok" }),
+    async () => ({ name: "Vokoma", version, apiVersion: 1 }),
   );
   app.post(
     "/api/auth/login",
@@ -203,7 +174,7 @@ export async function buildApp(
     "/api/auth/logout",
     { preHandler: secured, schema: { response: { 204: z.null(), ...errors } } },
     async (req, reply) => {
-      auth.revoke(await auth.authorize(req.headers.authorization));
+      auth.revoke(req.deviceId);
       reply.code(204).send(null);
     },
   );
@@ -262,7 +233,7 @@ export async function buildApp(
     },
     handler: async (req, reply) => {
       const { handle } = await files.get(req.params.fileId);
-      await sender.send(req, reply, handle);
+      await sendContent(req, reply, handle);
       return reply;
     },
   });

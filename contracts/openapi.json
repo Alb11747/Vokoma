@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Vokoma M0 API",
-    "version": "1.0.0"
+    "version": "0.0.0"
   },
   "components": {
     "securitySchemes": {
@@ -1917,15 +1917,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "One byte range. HEAD ignores Range."
-          },
-          {
-            "in": "header",
-            "name": "Range",
-            "schema": {
-              "type": "string"
-            },
-            "description": "One byte range. HEAD ignores Range."
+            "description": "One byte range. A header that does not parse or asks for several ranges is ignored. HEAD ignores Range."
           }
         ],
         "responses": {
@@ -2225,15 +2217,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "One byte range. HEAD ignores Range."
-          },
-          {
-            "in": "header",
-            "name": "Range",
-            "schema": {
-              "type": "string"
-            },
-            "description": "One byte range. HEAD ignores Range."
+            "description": "One byte range. A header that does not parse or asks for several ranges is ignored. HEAD ignores Range."
           }
         ],
         "responses": {
