@@ -4,6 +4,7 @@ import { buildApp } from "./app.js";
 const app = await buildApp(
   {
     listen: { host: "127.0.0.1", port: 3000 },
+    trustProxy: false,
     dataDirectory: ".",
     account: { username: "placeholder", passwordHash: "$argon2id$placeholder" },
     tokenSecret: "placeholder-secret-for-contract-generation",
@@ -14,8 +15,9 @@ const app = await buildApp(
 try {
   const doc = app.swagger() as import("openapi-types").OpenAPIV3.Document;
   // The byte response bypasses JSON serialization; describe it explicitly for code generation.
-  for (const method of ["get", "head"] as const) {
-    const route = doc.paths?.["/api/files/{fileId}/content"]?.[method];
+  const content = doc.paths?.["/api/files/{fileId}/content"];
+  // GET and HEAD share one operation object; patch it once.
+  for (const route of new Set([content?.get, content?.head])) {
     if (route) {
       route.parameters = [
         ...(route.parameters ?? []),
@@ -23,7 +25,8 @@ try {
           in: "header",
           name: "Range",
           schema: { type: "string" },
-          description: "One byte range. HEAD ignores Range.",
+          description:
+            "One byte range. A header that does not parse or asks for several ranges is ignored. HEAD ignores Range.",
         },
       ];
       route.responses = {
