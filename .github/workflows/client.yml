@@ -1,0 +1,90 @@
+name: client
+
+on:
+  pull_request:
+    paths:
+      - apps/client/**
+      - .github/workflows/client.yml
+  push:
+    branches: [main]
+    paths:
+      - apps/client/**
+      - .github/workflows/client.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: client-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: apps/client
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version-file: apps/client/pubspec.yaml
+          cache: true
+      - run: flutter pub get --enforce-lockfile
+      - run: dart format --output=none --set-exit-if-changed lib test
+      - run: flutter analyze
+      - run: flutter test
+
+  android:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version-file: apps/client/pubspec.yaml
+          cache: true
+      - run: flutter pub get --enforce-lockfile
+      # Signed with the Android debug key until release signing exists
+      # (milestone M0, part C). Not for distribution.
+      - run: flutter build apk --release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vokoma-android-apk
+          path: apps/client/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+  windows:
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version-file: apps/client/pubspec.yaml
+          cache: true
+      - run: flutter pub get --enforce-lockfile
+      - run: flutter build windows --release
+      - name: Check the bundled libmpv is the pinned release
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path windows/libmpv.cmake -Pattern 'VOKOMA_LIBMPV_VERSION "([^"]+)"').Matches[0].Groups[1].Value
+          $dll = [IO.File]::ReadAllBytes("build/windows/x64/runner/Release/libmpv-2.dll")
+          $text = [Text.Encoding]::ASCII.GetString($dll)
+          if (-not $text.Contains("mpv v$version")) { throw "libmpv-2.dll is not mpv v$version" }
+          Write-Output "libmpv-2.dll is mpv v$version"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vokoma-windows-x64
+          path: apps/client/build/windows/x64/runner/Release/
+          if-no-files-found: error
