@@ -1,6 +1,7 @@
 # Vokoma — architecture proposal
 
-Status: **proposed, awaiting approval** (2026-11-14). Nothing here is built yet.
+Status: **accepted** (2026-11-14). The user left the design decisions in this document
+to the project lead; they can still overrule any of them. Implementation starts with M0.
 [PLAN.md](PLAN.md) is the requirements brief and stays the source of truth for what the
 app must do; this document says how. Where the two disagree, PLAN.md wins until the user
 changes it.
@@ -498,5 +499,6 @@ Settled on 2026-11-14:
   v1 keeps running unchanged until v2 has recorded the same broadcasts beside it without
   loss, and v1 stays installed as a fallback after the cut-over.
 
-Open:
-- **TranscodeX: repair or replace, and when** (section 11). Awaiting the user's answer.
+- **TranscodeX:** replaced later by the archive job in section 11. Until then the
+  existing TranscodeX is kept running and tuned through its settings only (less scratch
+  space, faster preset if the size cost is small). The user approved this.
