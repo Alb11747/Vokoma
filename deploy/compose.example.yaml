@@ -1,0 +1,39 @@
+x-server: &server
+  image: vokoma:local
+  build:
+    context: ..
+    dockerfile: server/Dockerfile
+  restart: unless-stopped
+  environment:
+    VOKOMA_HOST: 0.0.0.0
+    VOKOMA_CONFIG: /config/config.json
+  healthcheck:
+    test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/api/server').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+services:
+  api:
+    <<: *server
+    command: [api]
+    ports: ["127.0.0.1:3000:3000"]
+    volumes:
+      - ./config:/config:ro
+      - ./data:/data
+      - ./example-media:/media:ro
+    environment:
+      VOKOMA_HOST: 0.0.0.0
+      VOKOMA_CONFIG: /config/config.json
+      VOKOMA_DATA_DIRECTORY: /data
+  recorder:
+    <<: *server
+    command: [recorder]
+    healthcheck: &stub-health
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  worker:
+    <<: *server
+    command: [worker]
+    healthcheck: *stub-health

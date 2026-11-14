@@ -1,0 +1,17 @@
+{
+  "listen": { "host": "127.0.0.1", "port": 3000 },
+  "dataDirectory": "./data",
+  "account": {
+    "username": "REPLACE_ME",
+    "passwordHash": "$argon2id$REPLACE_WITH_CLI_OUTPUT"
+  },
+  "tokenSecretFile": "./token-secret",
+  "roots": [
+    {
+      "id": "media",
+      "name": "Example media",
+      "kind": "anime",
+      "path": "/media"
+    }
+  ]
+}

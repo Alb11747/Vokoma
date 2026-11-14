@@ -3,3 +3,8 @@
 .stversions/
 *.sync-conflict-*
 docs/private/
+node_modules/
+server/dist/
+server/config.json
+server/token-secret
+server/data/
