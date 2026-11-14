@@ -1,0 +1,5 @@
+.stfolder
+.stignore
+.stversions/
+*.sync-conflict-*
+docs/private/
