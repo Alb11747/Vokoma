@@ -52,6 +52,14 @@ class _BenchmarkSectionState extends State<BenchmarkSection> {
         const SizedBox(height: 24),
         Text('Benchmark', style: Theme.of(context).textTheme.titleMedium),
         Text('Standard set: ${files.length} files'),
+        if (files.isEmpty && widget.folderFiles.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              'To benchmark one file, go back, open a folder and long-press (or right-click) a file. '
+              'To build a set, open About from inside a folder that contains video files.',
+            ),
+          ),
         Wrap(
           spacing: 8,
           runSpacing: 8,

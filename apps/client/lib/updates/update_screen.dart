@@ -39,7 +39,7 @@ class UpdateScreen extends StatelessWidget {
                 if (value != null) await service.configure(service.channel, value);
               },
             ),
-            Text('Last check: ${service.lastCheck?.toLocal() ?? 'Never'}'),
+            Text('Last check: ${service.lastCheck?.toLocal().toString().split('.').first ?? 'Never'}'),
             Text(service.status),
             if (service.applyError != null) Text(service.applyError!),
             OutlinedButton(onPressed: service.check, child: const Text('Check now')),
