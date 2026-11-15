@@ -78,7 +78,10 @@ are logged in full in the server log.
 Build from the repository root with
 `docker build -f server/Dockerfile -t vokoma:local .`.
 The runtime image includes Debian's ffprobe and its linked libraries; ffmpeg is
-only needed on the host for generated test fixtures. M0 runs one container (`api`). Copy
+only needed on the host for generated test fixtures.
+The slim image carries ffprobe's libraries without Debian package records.
+Image vulnerability scanners that rely on those records will not see these libraries.
+M0 runs one container (`api`). Copy
 `deploy/compose.example.yaml` and replace its example mounts/config; create the
 writable data directory first. `docker compose -f deploy/compose.example.yaml up
 --build` starts it. Media mounts are read
@@ -109,9 +112,8 @@ the configured database directory across container replacements.
 
 SQLite schema versions are tracked in `user_version`. Startup applies ordered,
 transactional migrations and refuses databases newer than the code. Existing
-unversioned M0 databases are recognised: the current schema is stamped as version
-1; the older schema gains the two refresh retry columns. Unknown unversioned
-schemas require manual inspection. Before changing an existing database, SQLite
+unversioned M0 databases receive version 1 through the same idempotent table
+creation used for fresh databases. Before changing an existing database, SQLite
 makes a consistent file copy (including committed WAL data) at `vokoma.sqlite.bak`.
 Only the latest completed backup is retained. Keep enough free space for that copy;
 a backup failure prevents migration. Stop the server before restoring a backup,
