@@ -30,6 +30,7 @@ jobs:
       - name: Batch main pushes for 30 minutes
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: sleep 1800
+      - run: node --test tools/release/release.test.mjs
       - id: version
         run: node tools/release/version.mjs
   server:
@@ -165,7 +166,7 @@ jobs:
             # One rolling release bounds retained APKs and Windows packages.
             # An incomplete replacement fails closed at signature/hash verification.
             if gh release view nightly >/dev/null 2>&1; then
-              gh release delete nightly --yes
+              gh release delete nightly --cleanup-tag --yes
             fi
             gh release create nightly --target "$GITHUB_SHA" --prerelease --title "Nightly $VERSION" --notes "Automated nightly $GITHUB_SHA"
             gh release upload nightly release/*
