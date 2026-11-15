@@ -55,7 +55,12 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: pnpm install --frozen-lockfile && pnpm check
         working-directory: server
-      - run: docker build -f server/Dockerfile --label org.opencontainers.image.source=https://github.com/${{ github.repository }} --label org.opencontainers.image.revision=${{ github.sha }} -t vokoma-server:release .
+      - run: docker build -f server/Dockerfile --build-arg VOKOMA_VERSION=${{ needs.prepare.outputs.version }} --label org.opencontainers.image.source=https://github.com/${{ github.repository }} --label org.opencontainers.image.revision=${{ github.sha }} -t vokoma-server:release .
+      - run: node --test test/image.test.mjs
+        working-directory: server
+        env:
+          IMAGE: vokoma-server:release
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
       - run: docker save vokoma-server:release | gzip > server-image.tar.gz
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
