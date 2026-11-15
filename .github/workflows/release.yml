@@ -13,7 +13,7 @@ permissions:
   contents: read
 # Cancel obsolete nightly builds during the debounce. Stable tags are independent.
 concurrency:
-  group: release-${{ startsWith(github.ref, 'refs/tags/') && github.ref || 'nightly' }}
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && format('dry-{0}', github.ref) || (startsWith(github.ref, 'refs/tags/') && github.ref || 'nightly') }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 jobs:
   prepare:

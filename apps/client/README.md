@@ -89,7 +89,7 @@ Releases. Nightly is the default channel. About / updates (available before logi
 and in the browser toolbar) shows current version, channel, last successful check,
 status and Check now. Checks run at launch and every four hours; downloads happen
 in the background. Choose install on next restart or install when idle. Idle means
-one minute without pointer interaction and no open player, including paused players.
+one minute without pointer or keyboard interaction and no open player, including paused players.
 Updates are never applied during a player session. Channel changes never downgrade.
 
 Release workflow: main pushes debounce for 30 minutes, then run all server/client

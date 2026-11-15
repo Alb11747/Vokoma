@@ -409,7 +409,7 @@ SHA-256 (SHA-1 fallback), not a signature under our key; the manifest supplies
 publisher authentication. No delta packages in M0. The Windows launcher disables
 Velopack's automatic startup apply so only authenticated packages are applied.
 A complete player session (even paused) blocks installation; idle means no player
-and no pointer interaction for a minute. Pending updates apply at the next launch
+and no pointer or keyboard interaction for a minute. Pending updates apply at the next launch
 for restart policy. Channel changes do not downgrade; stable may require waiting
 for a version newer than the installed nightly. Server updates are manual pulls
 and restarts in M0; no server self-updater is included.
