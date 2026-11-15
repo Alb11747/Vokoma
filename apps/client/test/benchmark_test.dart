@@ -410,6 +410,13 @@ void main() {
       expect(skipped, 3);
     });
 
+    test('a large folder adds an evenly spaced sample, first to last', () {
+      final files = List.generate(250, (i) => i);
+      expect(sampleEvenly(files, 6), [0, 49, 99, 149, 199, 249]);
+      expect(sampleEvenly([1, 2, 3], 6), [1, 2, 3]);
+      expect(sampleEvenly(List.generate(7, (i) => i), 6), [0, 1, 2, 3, 4, 6]);
+    });
+
     test('the benchmark set adds without duplicates and clears', () async {
       SharedPreferences.setMockInitialValues({});
       final set = await BenchmarkSet.open();

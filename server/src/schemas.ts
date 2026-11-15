@@ -69,3 +69,10 @@ export const listingSchema = z.object({
     ]),
   ),
 });
+export const benchmarkUploadSchema = z.object({
+  /** Short label of the device that ran the benchmark, used in the file name. */
+  device: z.string().min(1).max(128),
+  appVersion: z.string().min(1).max(64),
+  /** The results file (JSON Lines) as text. */
+  content: z.string().regex(/\S/, "Results are empty"),
+});

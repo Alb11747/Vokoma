@@ -125,6 +125,16 @@ class Api {
     return Listing.fromJson(json);
   }
 
+  /// `POST /api/diagnostics/benchmark`: stores the engine benchmark results
+  /// file ([content], JSON Lines) on the server. Returns the server's file name.
+  Future<String> uploadBenchmark({required String content, required String device, required String appVersion}) async {
+    final json = await _postJson(
+      ['diagnostics', 'benchmark'],
+      {'device': device, 'appVersion': appVersion, 'content': content},
+    );
+    return json['name'] as String;
+  }
+
   /// URL of a file's bytes. It carries no credentials; requests to it need
   /// the `Authorization` header like every other route.
   Uri contentUri(String fileId) => _apiUri(server, ['files', fileId, 'content']);
@@ -219,6 +229,20 @@ class Api {
     if (response.statusCode == 401) {
       token = await accessTokenAfterRejection(token);
       response = await _http.get(uri, headers: _auth(token));
+    }
+    return _decode(response);
+  }
+
+  Future<Map<String, dynamic>> _postJson(List<String> path, Map<String, Object?> body) async {
+    final uri = _apiUri(server, path);
+    final encoded = utf8.encode(jsonEncode(body));
+    Future<http.Response> send(String token) =>
+        _http.post(uri, headers: {..._auth(token), ..._jsonHeaders}, body: encoded);
+    var token = await accessToken();
+    var response = await send(token);
+    if (response.statusCode == 401) {
+      token = await accessTokenAfterRejection(token);
+      response = await send(token);
     }
     return _decode(response);
   }

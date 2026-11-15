@@ -38,6 +38,9 @@ class FakeServer {
   /// Every request: method, full URI, Authorization and Accept-Encoding.
   final requests = <({String method, Uri uri, String? auth, String? acceptEncoding})>[];
 
+  /// Bodies of benchmark uploads received.
+  final benchmarkUploads = <Map<String, dynamic>>[];
+
   /// Completes with the number of bytes written when a content response
   /// ends, early or not.
   final contentResponses = StreamController<({int written, bool complete})>.broadcast();
@@ -137,6 +140,11 @@ class FakeServer {
     }
 
     if (path == '/api/files/f1/content') return _content(request);
+
+    if (path == '/api/diagnostics/benchmark' && request.method == 'POST') {
+      benchmarkUploads.add(await _body(request));
+      return _json(res, 201, {'name': 'benchmark-1.jsonl'});
+    }
 
     return _error(res, 404, 'not_found');
   }

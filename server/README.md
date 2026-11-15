@@ -58,6 +58,12 @@ ranges is ignored and the whole file is sent with 200 (RFC 9110). Unsatisfiable
 ranges return 416. HEAD ignores Range. If a file shrinks mid-transfer the connection
 is closed rather than left waiting.
 
+`POST /api/diagnostics/benchmark` (authenticated, JSON body up to 16 MiB with
+`device`, `appVersion` and the results `content`) stores a client's engine
+benchmark results as `diagnostics/benchmark-<UTC time>-<device>-<version>-<random>.jsonl`
+in the data directory. Only the newest 20 uploads are kept; older ones are
+deleted by the server.
+
 Metadata shapes are described in `docs/milestones/M0.md`. Folder listing only
 returns duration when a cached probe matches path, size and nanosecond modification
 time; it never probes. A cold listing stats every entry first and then writes new or
