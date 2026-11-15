@@ -3,12 +3,17 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../api/api.dart';
 import '../../platform/device.dart';
+import '../../updates/update_service.dart';
 import 'results.dart';
 
-/// The results file as a table, newest first, with Share / copy.
+/// The results file as a table, newest first, with Share / copy and
+/// Upload to server.
 class ResultsScreen extends StatefulWidget {
-  const ResultsScreen({super.key});
+  const ResultsScreen({super.key, required this.api});
+
+  final Api api;
 
   @override
   State<ResultsScreen> createState() => _ResultsScreenState();
@@ -28,6 +33,28 @@ class _ResultsScreenState extends State<ResultsScreen> {
     }
   }
 
+  bool _uploading = false;
+
+  /// Sends [content] to the server, which keeps it in its data directory.
+  /// Share sheets on phones often refuse a file this large.
+  Future<void> _upload(String content) async {
+    setState(() => _uploading = true);
+    String message;
+    try {
+      await widget.api.uploadBenchmark(
+        content: content,
+        device: await Device.label(),
+        appVersion: UpdateService.instance.currentVersion,
+      );
+      message = 'Uploaded';
+    } catch (error) {
+      message = 'Upload failed: $error';
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: const Text('Benchmark results')),
@@ -42,13 +69,23 @@ class _ResultsScreenState extends State<ResultsScreen> {
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            Align(
-              alignment: Alignment.centerLeft,
-              child: FilledButton.icon(
-                onPressed: content.isEmpty ? null : () => _share(log, content),
-                icon: const Icon(Icons.share),
-                label: const Text('Share / copy results'),
-              ),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: content.isEmpty ? null : () => _share(log, content),
+                  icon: const Icon(Icons.share),
+                  label: const Text('Share / copy results'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: content.isEmpty || _uploading ? null : () => _upload(content),
+                  icon: _uploading
+                      ? const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.cloud_upload),
+                  label: Text(_uploading ? 'Uploading…' : 'Upload to server'),
+                ),
+              ],
             ),
             const SizedBox(height: 8),
             SelectableText(log.file.path, style: Theme.of(context).textTheme.bodySmall),

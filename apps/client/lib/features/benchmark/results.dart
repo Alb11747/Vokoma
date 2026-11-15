@@ -83,6 +83,14 @@ class BenchmarkSet {
   Future<void> clear() => _preferences.remove(_key);
 }
 
+/// At most [count] of [files], evenly spaced from the first to the last, so a
+/// large folder adds a sample instead of a run of unknown length.
+List<T> sampleEvenly<T>(List<T> files, int count) {
+  if (files.length <= count) return files;
+  if (count <= 1) return files.take(count).toList();
+  return [for (var i = 0; i < count; i++) files[i * (files.length - 1) ~/ (count - 1)]];
+}
+
 /// One line of the results file.
 Map<String, Object?> benchmarkRecord({
   required DateTime time,
@@ -150,7 +158,8 @@ class ResultRow {
   List<String> get engineErrors => [...?(record['engineErrors'] as List?)?.cast<String>()];
 }
 
-/// The JSON Lines file in the app's documents folder. Nothing is uploaded.
+/// The JSON Lines file in the app's documents folder. It leaves the device
+/// only when the user shares or uploads it from the results screen.
 class ResultsLog {
   ResultsLog(this.file);
 

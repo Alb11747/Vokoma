@@ -91,10 +91,13 @@ files repeat the back steps with the demuxer seek offset overridden to 0
 
 Start it with a long press or right click on a file (Run engine benchmark), or
 from About / updates → Benchmark (Run on the standard set; the set is filled
-with Add current folder's files and kept in preferences). One JSON object per
-file is appended to `Vokoma/engine-benchmark.jsonl` in the app's documents
-folder; the results screen shows it as a table and shares it (Android) or
-copies the path and content (Windows). Nothing is uploaded.
+from the current folder and kept in preferences, at most 6 evenly spaced files
+per press so a large folder does not start a run of unknown length). One JSON
+object per file is appended to `Vokoma/engine-benchmark.jsonl` in the app's
+documents folder; the results screen shows it as a table and shares it
+(Android) or copies the path and content (Windows). Upload to server sends the
+file to `POST /api/diagnostics/benchmark`, for when a share target refuses a
+file that large; nothing is uploaded otherwise.
 
 ## Hotkeys (Windows, M0)
 

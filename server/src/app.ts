@@ -18,12 +18,14 @@ import { Files } from "./library/files.js";
 import { probe } from "./media/probe.js";
 import { sendContent } from "./media/content.js";
 import { HttpError } from "./errors.js";
+import { saveBenchmarkUpload } from "./diagnostics.js";
 import {
   errorSchema,
   tokenSchema,
   loginSchema,
   metadataSchema,
   listingSchema,
+  benchmarkUploadSchema,
 } from "./schemas.js";
 // package.json sits one level above both src/ and dist/.
 const { version } = JSON.parse(
@@ -258,6 +260,33 @@ export async function buildApp(
       return reply;
     },
   });
+  app.post(
+    "/api/diagnostics/benchmark",
+    {
+      // Authorize before the body is read, so only a signed-in device can
+      // make the server buffer a large upload.
+      onRequest: secured,
+      // A results file from a long run; the default limit is for small JSON.
+      bodyLimit: 16 * 1024 * 1024,
+      schema: {
+        body: benchmarkUploadSchema,
+        response: {
+          201: z.object({ name: z.string() }),
+          ...errors,
+          413: errorSchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const name = await saveBenchmarkUpload(config.dataDirectory, req.body);
+      req.log.info(
+        { name, length: req.body.content.length },
+        "Benchmark results uploaded",
+      );
+      reply.code(201);
+      return { name };
+    },
+  );
   await app.ready();
   return app;
 }

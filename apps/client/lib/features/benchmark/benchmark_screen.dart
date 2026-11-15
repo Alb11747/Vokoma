@@ -97,7 +97,8 @@ class _BenchmarkScreenState extends State<BenchmarkScreen> {
     if (_cancelled) {
       Navigator.of(context).pop();
     } else {
-      await Navigator.of(context).pushReplacement(MaterialPageRoute<void>(builder: (_) => const ResultsScreen()));
+      await Navigator.of(context)
+          .pushReplacement(MaterialPageRoute<void>(builder: (_) => ResultsScreen(api: widget.api)));
     }
   }
 

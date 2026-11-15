@@ -18,6 +18,14 @@ class Device {
     return {...base, ...?android};
   }
 
+  /// A short label for the device, such as `Google Pixel 8` or `windows`,
+  /// sent with uploaded benchmark results.
+  static Future<String> label() async {
+    final info = await Device.info();
+    final model = [info['manufacturer'], info['model']].whereType<String>().join(' ');
+    return model.isEmpty ? Platform.operatingSystem : model;
+  }
+
   /// The Android share sheet with a snapshot of [path], an app file, sent
   /// as a content URI. Android only.
   static Future<void> shareFile(String path, {String? subject}) =>

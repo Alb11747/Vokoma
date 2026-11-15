@@ -115,6 +115,20 @@ void main() {
     expect(store.session!.refreshToken, server.validRefresh);
   });
 
+  test('benchmark upload sends the results with the token in the header, refreshing on 401', () async {
+    final api = await login();
+    server.expireAccessTokens();
+    final name = await api.uploadBenchmark(content: '{"schema":1}\n', device: 'Pixel 8', appVersion: '0.1.0');
+    expect(name, 'benchmark-1.jsonl');
+    expect(server.refreshCalls, 1);
+    expect(server.benchmarkUploads, [
+      {'device': 'Pixel 8', 'appVersion': '0.1.0', 'content': '{"schema":1}\n'},
+    ]);
+    final uploads = server.requests.where((r) => r.uri.path == '/api/diagnostics/benchmark').toList();
+    expect(uploads.map((r) => r.auth), ['Bearer access-1', isNot('Bearer access-1')]);
+    expect(uploads.every((r) => r.uri.query.isEmpty), isTrue);
+  });
+
   test('parallel requests with an expired token share one refresh', () async {
     final api = await login();
     server.expireAccessTokens();

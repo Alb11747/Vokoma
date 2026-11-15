@@ -12,6 +12,7 @@ import {
   rename,
   chmod,
   truncate,
+  readdir,
 } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
@@ -256,6 +257,57 @@ test("public server, auth required everywhere else, validation and error shape",
     (await app.inject({ url: "/api/roots?accessToken=anything" })).statusCode,
     401,
   );
+});
+test("benchmark uploads need auth, are size-limited, saved with safe names and pruned", async () => {
+  const upload = (payload: unknown, auth: object | undefined = headers) =>
+    app.inject({
+      method: "POST",
+      url: "/api/diagnostics/benchmark",
+      headers: auth,
+      payload: payload as object,
+    });
+  const diagnostics = path.join(config.dataDirectory, "diagnostics");
+  const content = '{"schema":1}\n{"schema":1}\n';
+  assert.equal(
+    (await upload({ device: "x", appVersion: "1", content }, {})).statusCode,
+    401,
+  );
+  for (const bad of [
+    {},
+    { device: "x", appVersion: "1", content: "" },
+    { device: "x", appVersion: "1", content: " \n" },
+    { device: "", appVersion: "1", content },
+  ])
+    assert.equal((await upload(bad)).statusCode, 400);
+  const tooLarge = await upload({
+    device: "x",
+    appVersion: "1",
+    content: "x".repeat(17 * 1024 * 1024),
+  });
+  assert.equal(tooLarge.statusCode, 413);
+  assert.equal(tooLarge.json().error.code, "payload_too_large");
+  // Larger than the default limit for other routes, within this route's.
+  const big = "y".repeat(2 * 1024 * 1024);
+  const saved = await upload({
+    device: "../Pixel 8 / Ünï",
+    appVersion: "0.1.0-nightly.5+7",
+    content: big,
+  });
+  assert.equal(saved.statusCode, 201);
+  const { name } = saved.json() as { name: string };
+  assert.match(
+    name,
+    /^benchmark-\d{8}T\d{6}\.\d{3}Z-Pixel-8-n-0\.1\.0-nightly\.5-7-[0-9a-f]{6}\.jsonl$/,
+  );
+  assert.equal(await readFile(path.join(diagnostics, name), "utf8"), big);
+  const names = [];
+  for (let i = 0; i < 21; i++) {
+    const res = await upload({ device: "d", appVersion: "1", content });
+    assert.equal(res.statusCode, 201);
+    names.push((res.json() as { name: string }).name);
+  }
+  // The newest 20 remain; the 2 MB upload was the oldest and is gone.
+  assert.deepEqual((await readdir(diagnostics)).sort(), names.slice(1).sort());
 });
 test("refresh rotates, the previous token works for 60 s, and logout revokes only this device", async () => {
   const first = (await login()).json(),

@@ -19,6 +19,9 @@ class BenchmarkSection extends StatefulWidget {
 }
 
 class _BenchmarkSectionState extends State<BenchmarkSection> {
+  /// Most files one press of Add takes from a folder.
+  static const _sampleSize = 6;
+
   BenchmarkSet? _set;
 
   @override
@@ -30,7 +33,7 @@ class _BenchmarkSectionState extends State<BenchmarkSection> {
   }
 
   Future<void> _add() async {
-    final added = await _set!.add(widget.folderFiles);
+    final added = await _set!.add(sampleEvenly(widget.folderFiles, _sampleSize));
     if (!mounted) return;
     setState(() {});
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added $added files')));
@@ -46,6 +49,7 @@ class _BenchmarkSectionState extends State<BenchmarkSection> {
     final set = _set;
     if (set == null) return const SizedBox.shrink();
     final files = set.files;
+    final folderCount = widget.folderFiles.length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -66,15 +70,22 @@ class _BenchmarkSectionState extends State<BenchmarkSection> {
           children: [
             FilledButton(
               onPressed: files.isEmpty ? null : () => startBenchmark(context, widget.api, files),
-              child: const Text('Run on the standard set'),
+              child: Text('Run on the standard set (${files.length} ${files.length == 1 ? 'file' : 'files'})'),
             ),
             OutlinedButton(
               onPressed: () =>
-                  Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const ResultsScreen())),
+                  Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => ResultsScreen(api: widget.api))),
               child: const Text('Results'),
             ),
             if (widget.folderFiles.isNotEmpty)
-              OutlinedButton(onPressed: _add, child: const Text("Add current folder's files to the benchmark set")),
+              OutlinedButton(
+                onPressed: _add,
+                child: Text(
+                  folderCount > _sampleSize
+                      ? 'Add $_sampleSize sample files from this folder (of $folderCount)'
+                      : "Add this folder's $folderCount ${folderCount == 1 ? 'file' : 'files'} to the benchmark set",
+                ),
+              ),
             OutlinedButton(onPressed: files.isEmpty ? null : _clear, child: const Text('Clear set')),
           ],
         ),
