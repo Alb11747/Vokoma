@@ -480,6 +480,20 @@ test("MP4 and transport-stream fixtures probe through read-only descriptors", as
   }
 });
 
+test("a data directory inside a media root is refused before anything is written", async () => {
+  const root = config.roots[0]!.path;
+  const link = path.join(scratch, "data-link");
+  await symlink(root, link);
+  for (const dataDirectory of [
+    path.join(root, "state", "db"),
+    path.join(link, "state"),
+  ])
+    await assert.rejects(
+      buildApp({ ...config, dataDirectory }),
+      /outside media roots/,
+    );
+  await assert.rejects(readFile(path.join(root, "state")), { code: "ENOENT" });
+});
 test("traversal, absolute paths and symlink escapes refused", async () => {
   for (const folder of [
     "..",

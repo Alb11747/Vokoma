@@ -8,7 +8,7 @@ import {
 } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { Config } from "./config.js";
 import { rootSchema } from "./config.js";
@@ -44,6 +44,17 @@ const statusCodes: Record<number, string> = {
   416: "invalid_range",
   429: "rate_limited",
 };
+/** Real path of a location that may not exist yet: resolves the nearest existing ancestor. */
+async function resolveDestination(target: string): Promise<string> {
+  try {
+    return await realpath(target);
+  } catch (error) {
+    const parent = path.dirname(target);
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT" || parent === target)
+      throw error;
+    return path.join(await resolveDestination(parent), path.basename(target));
+  }
+}
 export async function buildApp(
   config: Config,
   options: { logger?: boolean; contractOnly?: boolean } = {},
@@ -74,8 +85,18 @@ export async function buildApp(
     },
     transform: jsonSchemaTransform,
   });
-  if (!options.contractOnly)
+  if (!options.contractOnly) {
+    // Media roots are read-only to this server. Refuse a data directory that
+    // resolves inside one (directly or through a symlink) before creating
+    // anything, since SQLite would write its files there.
+    const data = await resolveDestination(path.resolve(config.dataDirectory));
+    for (const root of config.roots) {
+      const media = await realpath(root.path);
+      if (data === media || data.startsWith(media + path.sep))
+        throw new Error("Data directory must be outside media roots");
+    }
     await mkdir(config.dataDirectory, { recursive: true });
+  }
   const db = openDatabase(
     options.contractOnly
       ? ":memory:"
