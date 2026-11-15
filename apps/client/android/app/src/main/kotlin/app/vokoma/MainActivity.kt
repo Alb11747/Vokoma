@@ -24,16 +24,21 @@ class MainActivity : FlutterActivity() {
             try {
                 val file = File(call.argument<String>("path")!!).canonicalFile
                 require(file.path.startsWith(filesDir.parentFile!!.canonicalPath + "/")) { "APK must be in private app storage" }
-                val flags = PackageManager.GET_SIGNING_CERTIFICATES
+                @Suppress("DEPRECATION")
+                val flags = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
                 val candidate = packageManager.getPackageArchiveInfo(file.path, flags) ?: error("Invalid APK")
                 val installed = packageManager.getPackageInfo(packageName, flags)
                 require(candidate.packageName == packageName) { "Package name mismatch" }
-                require(candidate.longVersionCode > installed.longVersionCode) { "Version code must increase" }
-                val incoming = candidate.signingInfo?.apkContentsSigners?.map { it.toCharsString() }?.toSet()
-                val existing = installed.signingInfo?.apkContentsSigners?.map { it.toCharsString() }?.toSet()
+                @Suppress("DEPRECATION")
+                val newer = if (Build.VERSION.SDK_INT >= 28) candidate.longVersionCode > installed.longVersionCode else candidate.versionCode > installed.versionCode
+                require(newer) { "Version code must increase" }
+                @Suppress("DEPRECATION")
+                val incoming = (if (Build.VERSION.SDK_INT >= 28) candidate.signingInfo?.apkContentsSigners else candidate.signatures)?.map { it.toCharsString() }?.toSet()
+                @Suppress("DEPRECATION")
+                val existing = (if (Build.VERSION.SDK_INT >= 28) installed.signingInfo?.apkContentsSigners else installed.signatures)?.map { it.toCharsString() }?.toSet()
                 require(!incoming.isNullOrEmpty() && incoming == existing) { "Signing certificate mismatch" }
                 // Android performs cryptographic APK signature validation at commit as well.
-                if (!packageManager.canRequestPackageInstalls()) {
+                if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
                     startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
                     result.error("approval", "Allow updates from Vokoma, then check again", null)
                     return@setMethodCallHandler

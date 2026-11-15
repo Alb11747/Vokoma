@@ -96,7 +96,8 @@ Release workflow: main pushes debounce for 30 minutes, then run all server/clien
 checks and build both native packages. A rolling nightly replaces prior release
 assets; a `vX.Y.Z` tag produces stable. Android build codes share one increasing
 workflow counter across channels. Do not delete/recreate the release workflow's
-run history or lower its counter. Nightly versions are X.Y.Z-nightly.build, stable versions match the tag. From Actions,
+run history or lower its counter. Nightly versions are X.Y.Z-nightly.build; stable
+versions match the tag. From Actions,
 Release → Run workflow → dry_run builds/signs artifacts without publishing. Never
 use pull-request artifacts for distribution: they are debug-signed and cannot
 update a production installation because the certificate differs.
@@ -117,7 +118,6 @@ signature at commit. Allow Vokoma to install unknown apps once when requested,
 then Check now again. Android 12+ requests USER_ACTION_NOT_REQUIRED for self-updates
 and declares UPDATE_PACKAGES_WITHOUT_USER_ACTION; OS policy and target-SDK rules
 can still require confirmation. Earlier Android versions require confirmation.
-Use Android 9+ (API 28); older versions are outside this implementation's support.
 
 Before release acceptance, test two successive builds on Windows and a real phone,
 both policies, both channels, playback veto, interrupted downloads, corrupt packages,
