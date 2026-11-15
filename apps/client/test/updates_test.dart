@@ -7,10 +7,11 @@ import 'package:vokoma/updates/release.dart';
 void main() {
   test('numeric versions order releases across patch and build boundaries', () {
     int compare(String a, String b) => ReleaseVersion.parse(a).compareTo(ReleaseVersion.parse(b));
-    expect(compare('0.1.1.100', '0.1.1.99'), greaterThan(0));
-    expect(compare('v0.1.2', '0.1.1.999'), greaterThan(0));
-    expect(compare('0.1.1+100', '0.1.1.100'), 0);
-    expect(compare('1.10.0.2', '1.9.0.999'), greaterThan(0));
+    expect(compare('0.1.1-nightly.100', '0.1.1-nightly.99'), greaterThan(0));
+    expect(compare('v0.1.2', '0.1.1-nightly.999'), greaterThan(0));
+    expect(compare('0.1.1+100', '0.1.1+99'), 0);
+    expect(compare('1.10.0-nightly.2', '1.9.0-nightly.999'), greaterThan(0));
+    expect(compare('v0.1.1', '0.1.1-nightly.999'), greaterThan(0));
     expect(() => ReleaseVersion.parse('0.1.1-malicious'), throwsFormatException);
   });
   test('stable discovery excludes prereleases; nightly uses explicit rolling tag', () {
@@ -62,7 +63,7 @@ void main() {
     final json = {
       'schema': 1,
       'channel': 'nightly',
-      'version': '0.1.1.52',
+      'version': '0.1.1-nightly.52',
       'assets': {
         'android': {'name': 'Vokoma.apk', 'sha256': List.filled(64, 'a').join(), 'size': 123},
       },

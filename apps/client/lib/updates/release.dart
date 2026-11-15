@@ -6,23 +6,28 @@ enum UpdateChannel { nightly, stable }
 
 enum InstallPolicy { restart, idle }
 
-/// Fourth numeric component is the global CI build number, including stable builds.
-/// Comparing it last allows a later stable patch to supersede a nightly.
+/// Nightly's numeric prerelease counter sorts below the corresponding stable tag.
+/// Build metadata is display-only, as required by SemVer and Velopack.
 class ReleaseVersion implements Comparable<ReleaseVersion> {
-  ReleaseVersion(this.parts);
+  ReleaseVersion(this.parts, this.nightlyBuild);
   final List<int> parts;
+  final int? nightlyBuild;
   factory ReleaseVersion.parse(String value) {
-    final match = RegExp(r'^v?(\d+)\.(\d+)\.(\d+)(?:[.+](\d+))?$').firstMatch(value);
+    final match = RegExp(r'^v?(\d+)\.(\d+)\.(\d+)(?:-nightly\.(\d+))?(?:\+(\d+))?$').firstMatch(value);
     if (match == null) throw const FormatException('Invalid release version');
-    return ReleaseVersion([for (var i = 1; i <= 4; i++) int.parse(match[i] ?? '0')]);
+    return ReleaseVersion([
+      for (var i = 1; i <= 3; i++) int.parse(match[i]!),
+    ], match[4] == null ? null : int.parse(match[4]!));
   }
   @override
   int compareTo(ReleaseVersion other) {
-    for (var i = 0; i < 4; i++) {
+    for (var i = 0; i < 3; i++) {
       final result = parts[i].compareTo(other.parts[i]);
       if (result != 0) return result;
     }
-    return 0;
+    if (nightlyBuild == null) return other.nightlyBuild == null ? 0 : 1;
+    if (other.nightlyBuild == null) return -1;
+    return nightlyBuild!.compareTo(other.nightlyBuild!);
   }
 }
 

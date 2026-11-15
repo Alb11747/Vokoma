@@ -17,17 +17,19 @@ class UpdateService extends ChangeNotifier {
   static const _native = MethodChannel('app.vokoma/updates');
   UpdateChannel channel = UpdateChannel.nightly;
   InstallPolicy policy = InstallPolicy.restart;
-  String currentVersion = '0.0.0.0';
+  String currentVersion = '0.0.0+0';
   String status = 'Not checked';
   DateTime? lastCheck;
   bool playerOpen = false;
   bool installing = false;
   bool _busy = false;
   bool _ready = false;
+  bool _attempted = false;
   DateTime _interaction = DateTime.now();
   late SharedPreferences _preferences;
   late Directory _directory;
   Timer? _timer;
+  DateTime _nextCheck = DateTime.now();
   final _http = http.Client();
 
   void interact() => _interaction = DateTime.now();
@@ -43,15 +45,19 @@ class UpdateService extends ChangeNotifier {
       policy = InstallPolicy.values.byName(_preferences.getString('installPolicy') ?? 'restart');
       lastCheck = DateTime.tryParse(_preferences.getString('updateLastCheck') ?? '');
       final info = await PackageInfo.fromPlatform();
-      currentVersion = '${info.version}.${info.buildNumber}';
+      currentVersion = '${info.version}+${info.buildNumber}';
       _directory = Directory('${(await getApplicationSupportDirectory()).path}/updates');
       await _directory.create(recursive: true);
       _ready = true;
-      await _apply(startup: true);
+      try {
+        await _apply(startup: true);
+      } catch (error) {
+        status = 'Pending update failed: $error';
+      }
       await check();
       _timer = Timer.periodic(const Duration(seconds: 30), (_) async {
         if (!_ready || _busy || installing) return;
-        if (lastCheck == null || DateTime.now().difference(lastCheck!) >= const Duration(hours: 4)) {
+        if (!DateTime.now().isBefore(_nextCheck)) {
           await check();
         } else {
           _busy = true;
@@ -92,6 +98,7 @@ class UpdateService extends ChangeNotifier {
   Future<void> check() async {
     if (!_ready || _busy || installing) return;
     _busy = true;
+    _nextCheck = DateTime.now().add(const Duration(hours: 4));
     status = 'Checking';
     notifyListeners();
     try {
@@ -152,6 +159,7 @@ class UpdateService extends ChangeNotifier {
           await old.delete();
         }
       }
+      _attempted = false;
       status = 'Ready: ${manifest.version}';
       await _apply();
     } catch (error) {
@@ -168,7 +176,8 @@ class UpdateService extends ChangeNotifier {
       (await sha256.bind(file.openRead()).first).toString() == asset.sha256;
 
   Future<void> _apply({bool startup = false}) async {
-    if (installing ||
+    if (_attempted ||
+        installing ||
         !mayInstall(
           policy: policy,
           startup: startup,
@@ -200,6 +209,7 @@ class UpdateService extends ChangeNotifier {
     )) {
       return;
     }
+    _attempted = true;
     installing = true;
     try {
       if (Platform.isWindows) {

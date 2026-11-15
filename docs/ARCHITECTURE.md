@@ -398,7 +398,8 @@ install when idle and never during playback.
 one rolling prerelease named `nightly`, bounding stored release assets. Stable is
 `vX.Y.Z`; nightly uses the next patch after the highest stable tag (initial base
 0.1.0). Android versionCode is the shared release workflow run number plus one;
-Windows uses `X.Y.Z.build` so Velopack compares successive builds numerically.
+Windows and Android versionName use `X.Y.Z-nightly.build`, which Velopack orders
+below the corresponding stable tag.
 Stable display/versionName is X.Y.Z, with the same increasing build code.
 Ed25519 signs the exact `update.json` bytes; that manifest binds channel, version,
 package filename, byte length and SHA-256. Its detached signature is verified with

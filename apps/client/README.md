@@ -96,7 +96,7 @@ Release workflow: main pushes debounce for 30 minutes, then run all server/clien
 checks and build both native packages. A rolling nightly replaces prior release
 assets; a `vX.Y.Z` tag produces stable. Android build codes share one increasing
 workflow counter across channels. Do not delete/recreate the release workflow's
-run history or lower its counter. Windows version is X.Y.Z.build. From Actions,
+run history or lower its counter. Nightly versions are X.Y.Z-nightly.build, stable versions match the tag. From Actions,
 Release → Run workflow → dry_run builds/signs artifacts without publishing. Never
 use pull-request artifacts for distribution: they are debug-signed and cannot
 update a production installation because the certificate differs.
