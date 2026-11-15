@@ -8,6 +8,8 @@ COPY server/src ./src
 RUN pnpm build && pnpm prune --prod
 
 FROM node:24-bookworm-slim
+# Links the published image to this repository so the release workflow may push it.
+LABEL org.opencontainers.image.source="https://github.com/Alb11747/Vokoma"
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 WORKDIR /app/server
 COPY --from=build /app/server/package.json ./
