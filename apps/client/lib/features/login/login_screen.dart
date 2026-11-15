@@ -1,10 +1,9 @@
-import '../../updates/update_screen.dart';
-
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 
 import '../../api/api.dart';
+import '../../updates/update_screen.dart';
 import '../../api/token_store.dart';
 
 /// Server address plus user name and password. One account per server.

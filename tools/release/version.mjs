@@ -7,10 +7,10 @@ const tags = execFileSync('git', ['tag', '--list', 'v*'], {encoding:'utf8'}).tri
   .filter(x => /^v\d+\.\d+\.\d+$/.test(x)).map(x => x.slice(1).split('.').map(Number))
   .sort((a,b) => a[0]-b[0] || a[1]-b[1] || a[2]-b[2]);
 const base = tags.at(-1) ?? [0,1,0];
-const name = stable ? stable[1] : `${base[0]}.${base[1]}.${base[2]+1}`;
+const core = stable ? stable[1] : `${base[0]}.${base[1]}.${base[2]+1}`;
 // One workflow counter is shared by both channels; reruns reproduce the same code.
 const build = Number(process.env.GITHUB_RUN_NUMBER) + 1;
 if (!Number.isSafeInteger(build) || build > 2100000000) throw Error('Invalid Android build code');
+const name = stable ? core : `${core}-nightly.${build}`;
 const channel = stable ? 'stable' : 'nightly';
-appendFileSync(process.env.GITHUB_OUTPUT, `name=${name}\nbuild=${build}\nversion=${stable ? name : `${name}.${build}`}
-manifest_version=${name}.${build}\nchannel=${channel}\n`);
+appendFileSync(process.env.GITHUB_OUTPUT, `name=${name}\nbuild=${build}\nversion=${name}\nchannel=${channel}\n`);

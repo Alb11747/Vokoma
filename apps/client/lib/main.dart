@@ -2,13 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import 'updates/update_service.dart';
-
 import 'api/api.dart';
 import 'api/token_store.dart';
 import 'engine/mpv_engine.dart';
 import 'features/browser/browser_screen.dart';
 import 'features/login/login_screen.dart';
+import 'updates/update_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();

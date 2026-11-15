@@ -1,8 +1,7 @@
-import '../../updates/update_screen.dart';
-
 import 'package:flutter/material.dart';
 
 import '../../api/api.dart';
+import '../../updates/update_screen.dart';
 import '../../format.dart';
 import '../../updates/update_service.dart';
 import '../player/player_screen.dart';
