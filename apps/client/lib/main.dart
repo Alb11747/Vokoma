@@ -1,4 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+
+import 'updates/update_service.dart';
 
 import 'api/api.dart';
 import 'api/token_store.dart';
@@ -20,6 +24,7 @@ Future<void> main() async {
     // the user can still log in, and sees why the old session is gone.
     restoreError = 'Could not read the saved session: $error';
   }
+  unawaited(UpdateService.instance.start());
   runApp(VokomaApp(store: store, initialApi: api, initialError: restoreError));
 }
 
@@ -65,6 +70,7 @@ class _VokomaAppState extends State<VokomaApp> {
     final api = _api;
     return MaterialApp(
       title: 'Vokoma',
+      builder: (context, child) => Listener(onPointerDown: (_) => UpdateService.instance.interact(), child: child),
       navigatorKey: _navigator,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal, brightness: Brightness.dark),

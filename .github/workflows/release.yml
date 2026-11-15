@@ -1,0 +1,175 @@
+name: Release
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build artifacts without publishing
+        type: boolean
+        default: true
+permissions:
+  contents: read
+# Cancel obsolete nightly builds during the debounce. Stable tags are independent.
+concurrency:
+  group: release-${{ startsWith(github.ref, 'refs/tags/') && github.ref || 'nightly' }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.version.outputs.name }}
+      build: ${{ steps.version.outputs.build }}
+      version: ${{ steps.version.outputs.version }}
+      manifest_version: ${{ steps.version.outputs.manifest_version }}
+      channel: ${{ steps.version.outputs.channel }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Batch main pushes for 30 minutes
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: sleep 1800
+      - id: version
+        run: node tools/release/version.mjs
+  server:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          package_json_file: server/package.json
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - run: pnpm install --frozen-lockfile && pnpm check
+        working-directory: server
+      - run: docker build -f server/Dockerfile -t vokoma-server:release .
+      - run: docker save vokoma-server:release | gzip > server-image.tar.gz
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: server-image
+          path: server-image.tar.gz
+          retention-days: 2
+  client:
+    needs: prepare
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: apps/client
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6
+        if: runner.os == 'Linux'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version-file: apps/client/pubspec.yaml
+          cache: true
+      - run: flutter pub get --enforce-lockfile
+      - run: dart format --output=none --set-exit-if-changed lib test && flutter analyze && flutter test
+      - name: Sign and build Android
+        if: runner.os == 'Linux'
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE"
+          export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+          trap 'rm -f "$ANDROID_KEYSTORE_PATH"' EXIT
+          printf '%s' "$KEYSTORE" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          flutter build apk --release --build-name '${{ needs.prepare.outputs.name }}' --build-number '${{ needs.prepare.outputs.build }}'
+          mkdir -p ../../release
+          cp build/app/outputs/flutter-apk/app-release.apk ../../release/Vokoma.apk
+      - name: Build Windows
+        if: runner.os == 'Windows'
+        run: flutter build windows --release --build-name '${{ needs.prepare.outputs.name }}' --build-number '${{ needs.prepare.outputs.build }}'
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        if: runner.os == 'Windows'
+        with:
+          dotnet-version: '8.0.x'
+      - name: Package per-user Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: .
+        run: |
+          dotnet publish tools/windows-updater/Updater.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o apps/client/build/windows/x64/runner/Release
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          dotnet tool install --tool-path .vpk vpk --version 1.2.161
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .vpk/vpk.exe pack --packId Vokoma --packVersion '${{ needs.prepare.outputs.version }}' --packDir apps/client/build/windows/x64/runner/Release --mainExe VokomaLauncher.exe --outputDir release --channel win
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-${{ runner.os }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: [prepare, server, client]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release
+      - name: Authenticate update metadata
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+          VERSION: ${{ needs.prepare.outputs.manifest_version }}
+        run: node tools/release/sign.mjs release
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: signed-release
+          path: release/
+          retention-days: 7
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        if: github.event_name == 'push' || !inputs.dry_run
+        with:
+          name: server-image
+      - name: Push image and publish release
+        if: (github.event_name == 'push' || !inputs.dry_run) && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/vokoma-server"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker load < server-image.tar.gz
+          docker tag vokoma-server:release "$image:$VERSION"
+          docker tag vokoma-server:release "$image:$CHANNEL"
+          docker push "$image:$VERSION"
+          docker push "$image:$CHANNEL"
+          if [ "$CHANNEL" = nightly ]; then
+            # One rolling release bounds retained APKs and Windows packages.
+            # An incomplete replacement fails closed at signature/hash verification.
+            if gh release view nightly >/dev/null 2>&1; then
+              gh release delete nightly --yes
+            fi
+            gh release create nightly --target "$GITHUB_SHA" --prerelease --title "Nightly $VERSION" --notes "Automated nightly $GITHUB_SHA"
+            gh release upload nightly release/*
+          else
+            gh release create "$GITHUB_REF_NAME" release/* --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+          fi

@@ -9,6 +9,7 @@ import '../../api/media_proxy.dart';
 import '../../engine/mpv_engine.dart';
 import '../../engine/player_engine.dart';
 import '../../format.dart';
+import '../../updates/update_service.dart';
 import '../../platform/window.dart';
 import 'hotkeys.dart';
 import 'player_controller.dart';
@@ -40,6 +41,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void initState() {
     super.initState();
+    UpdateService.instance.setPlayerOpen(true);
     _errors = _engine.errorStream.listen(_showError);
     if (Platform.isAndroid) unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
     unawaited(_open());
@@ -72,7 +74,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     unawaited(_errors?.cancel());
     if (_fullscreen && Platform.isWindows) unawaited(AppWindow.setFullscreen(false));
     if (Platform.isAndroid) unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
-    unawaited(_engine.dispose().whenComplete(() => _proxy?.close()));
+    unawaited(
+      _engine.dispose().whenComplete(() async {
+        await _proxy?.close();
+        UpdateService.instance.setPlayerOpen(false);
+      }),
+    );
     super.dispose();
   }
 

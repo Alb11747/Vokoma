@@ -84,5 +84,26 @@ writable data directory first. `docker compose -f deploy/compose.example.yaml up
 only and only the API port is published, on loopback for a reverse proxy.
 
 No scanning jobs, series/broadcast model, recorder behavior, encoding jobs, sync,
-watch tracking, downloads, web player, nginx deployment or image publishing are
+watch tracking, downloads, web player, nginx deployment are
 included. Client releases, updates and the real-device engine gate are later M0 parts.
+
+## Published images and manual updates
+
+The release workflow publishes `ghcr.io/alb11747/vokoma-server:nightly`, immutable
+numeric release versions, and `stable` on stable tags. Configure the Compose
+service's image to that address instead of a local build. Stop playback before a
+restart; M0 has no server self-update or automatic idle detection.
+
+```sh
+# Use the Compose file you configured for deployment.
+docker compose pull
+docker compose up -d --no-build
+docker compose ps
+docker compose logs --tail=50
+```
+
+Check GET /api/server through the configured endpoint after restarting. To roll
+back, set the image to the previous numeric version, pull and repeat up. Persist
+the configured database directory across container replacements. The image remains
+Debian slim with ffmpeg: replacing its codec dependencies solely to reduce size
+would require separate media compatibility validation.

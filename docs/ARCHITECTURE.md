@@ -394,6 +394,25 @@ Each device picks a channel; the default is `nightly`.
 The user setting from PLAN.md applies on every platform: install on the next restart, or
 install when idle and never during playback.
 
+**M0 release decisions.** Main releases use a cancellable 30-minute debounce and
+one rolling prerelease named `nightly`, bounding stored release assets. Stable is
+`vX.Y.Z`; nightly uses the next patch after the highest stable tag (initial base
+0.1.0). Android versionCode is the shared release workflow run number plus one;
+Windows uses `X.Y.Z.build` so Velopack compares successive builds numerically.
+Stable display/versionName is X.Y.Z, with the same increasing build code.
+Ed25519 signs the exact `update.json` bytes; that manifest binds channel, version,
+package filename, byte length and SHA-256. Its detached signature is verified with
+the compiled public key, and package hashes are checked again before install.
+The signing private key is a CI secret. Velopack 1.2.161 checks package size and
+SHA-256 (SHA-1 fallback), not a signature under our key; the manifest supplies
+publisher authentication. No delta packages in M0. The Windows launcher disables
+Velopack's automatic startup apply so only authenticated packages are applied.
+A complete player session (even paused) blocks installation; idle means no player
+and no pointer interaction for a minute. Pending updates apply at the next launch
+for restart policy. Channel changes do not downgrade; stable may require waiting
+for a version newer than the installed nightly. Server updates are manual pulls
+and restarts in M0; no server self-updater is included.
+
 **CI.** GitHub-hosted runners: Linux for the server, web and Android; Windows for the
 Windows build. Checks on pull requests are filtered by path. Release signing keys
 (Android keystore, update-signing key) are GitHub secrets, which pull requests from
