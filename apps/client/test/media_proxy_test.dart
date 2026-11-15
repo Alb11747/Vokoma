@@ -68,6 +68,8 @@ void main() {
     final upstream = server.requests.last;
     expect(upstream.uri.path, '/api/files/f1/content');
     expect(upstream.auth, startsWith('Bearer access-'));
+    // The proxy drops Content-Encoding, so it must not ask for gzip.
+    expect(upstream.acceptEncoding, 'identity');
   });
 
   test('keeps serving after the access token expires mid-playback', () async {

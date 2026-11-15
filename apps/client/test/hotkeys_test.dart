@@ -51,6 +51,22 @@ void main() {
     expect(actionFor(K.space, ctrl: true), isNull);
     expect(actionFor(K.keyF, ctrl: true), isNull);
     expect(actionFor(K.comma, alt: true), isNull);
+    expect(actionFor(K.escape, ctrl: true), isNull);
+    expect(actionFor(K.escape, alt: true), isNull);
+  });
+
+  test('nothing is bound with the Windows (Meta) key', () {
+    for (final key in [K.space, K.comma, K.keyF, K.escape, left, right, K.keyM]) {
+      expect(actionFor(key, meta: true), isNull, reason: key.debugName);
+    }
+    expect(actionFor(K.keyM, shift: true, meta: true), isNull);
+  });
+
+  testWidgets('the player reads Meta from the keyboard', (tester) async {
+    expect(actionForKeyboard(K.space, HardwareKeyboard.instance), isA<TogglePlay>());
+    await simulateKeyDownEvent(K.metaLeft);
+    expect(actionForKeyboard(K.space, HardwareKeyboard.instance), isNull);
+    await simulateKeyUpEvent(K.metaLeft);
   });
 
   test('held keys repeat seeks, steps and speed only', () {

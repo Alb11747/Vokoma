@@ -73,13 +73,20 @@ const speedStep = 0.1;
 /// Maps a key press to an action, or null when the key does nothing.
 ///
 /// Modifiers must match exactly, so for example plain `M` and number keys do
-/// nothing (PLAN.md: number keys must not jump around the timeline).
-PlayerAction? actionFor(LogicalKeyboardKey key, {bool shift = false, bool ctrl = false, bool alt = false}) {
-  final none = !shift && !ctrl && !alt;
-  final count = (shift ? 1 : 0) + (ctrl ? 1 : 0) + (alt ? 1 : 0);
+/// nothing (PLAN.md: number keys must not jump around the timeline). No
+/// binding uses [meta] (the Windows key), so any key held with it does nothing.
+PlayerAction? actionFor(
+  LogicalKeyboardKey key, {
+  bool shift = false,
+  bool ctrl = false,
+  bool alt = false,
+  bool meta = false,
+}) {
+  final none = !shift && !ctrl && !alt && !meta;
+  final count = (shift ? 1 : 0) + (ctrl ? 1 : 0) + (alt ? 1 : 0) + (meta ? 1 : 0);
 
   if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
-    if (count > 1) return null;
+    if (count > 1 || meta) return null;
     final size = shift
         ? seekShift
         : ctrl
@@ -92,7 +99,6 @@ PlayerAction? actionFor(LogicalKeyboardKey key, {bool shift = false, bool ctrl =
   if (key == LogicalKeyboardKey.keyM) {
     return (count == 1 && (shift || ctrl)) ? const ToggleMute() : null;
   }
-  if (key == LogicalKeyboardKey.escape) return const Back();
   if (!none) return null;
   return switch (key) {
     LogicalKeyboardKey.space => const TogglePlay(),
@@ -102,6 +108,16 @@ PlayerAction? actionFor(LogicalKeyboardKey key, {bool shift = false, bool ctrl =
     LogicalKeyboardKey.bracketRight => const ChangeSpeed(speedStep),
     LogicalKeyboardKey.slash => const ToggleNormalSpeed(),
     LogicalKeyboardKey.keyF => const ToggleFullscreen(),
+    LogicalKeyboardKey.escape => const Back(),
     _ => null,
   };
 }
+
+/// [actionFor] with the modifiers currently held on [keyboard].
+PlayerAction? actionForKeyboard(LogicalKeyboardKey key, HardwareKeyboard keyboard) => actionFor(
+  key,
+  shift: keyboard.isShiftPressed,
+  ctrl: keyboard.isControlPressed,
+  alt: keyboard.isAltPressed,
+  meta: keyboard.isMetaPressed,
+);

@@ -30,8 +30,13 @@ class FakeServer {
   int logoutCalls = 0;
   int _counter = 0;
 
-  /// Every request: method, full URI and Authorization header.
-  final requests = <({String method, Uri uri, String? auth})>[];
+  // Like the real server, a retry with the previous refresh token within 60 s
+  // of rotating it gets the same new refresh token (and a new access token).
+  String? _previousRefresh;
+  DateTime _previousRefreshUntil = DateTime(0);
+
+  /// Every request: method, full URI, Authorization and Accept-Encoding.
+  final requests = <({String method, Uri uri, String? auth, String? acceptEncoding})>[];
 
   /// Completes with the number of bytes written when a content response
   /// ends, early or not.
@@ -53,9 +58,9 @@ class FakeServer {
     await contentResponses.close();
   }
 
-  Map<String, Object> _grant() {
+  Map<String, Object> _grant({String? refresh}) {
     final access = 'access-${++_counter}';
-    final refresh = 'refresh-${++_counter}';
+    refresh ??= 'refresh-${++_counter}';
     validAccess.add(access);
     validRefresh = refresh;
     return {'accessToken': access, 'expiresInSeconds': accessTtlSeconds, 'refreshToken': refresh, 'deviceId': 'dev-1'};
@@ -63,7 +68,12 @@ class FakeServer {
 
   Future<void> _handle(HttpRequest request) async {
     final auth = request.headers.value('authorization');
-    requests.add((method: request.method, uri: request.uri, auth: auth));
+    requests.add((
+      method: request.method,
+      uri: request.uri,
+      auth: auth,
+      acceptEncoding: request.headers.value('accept-encoding'),
+    ));
     final path = request.uri.path;
     final res = request.response;
 
@@ -81,8 +91,17 @@ class FakeServer {
       refreshCalls++;
       final body = await _body(request);
       await Future<void>.delayed(refreshDelay);
-      if (body['refreshToken'] != validRefresh) return _error(res, 401, 'invalid_token');
-      return _json(res, 200, _grant());
+      final presented = body['refreshToken'];
+      if (presented == validRefresh && presented != null) {
+        _previousRefresh = presented as String;
+        _previousRefreshUntil = DateTime.now().add(const Duration(seconds: 60));
+        return _json(res, 200, _grant());
+      }
+      // validRefresh is null once the device is revoked, which ends the grace.
+      if (presented == _previousRefresh && validRefresh != null && DateTime.now().isBefore(_previousRefreshUntil)) {
+        return _json(res, 200, _grant(refresh: validRefresh));
+      }
+      return _error(res, 401, 'invalid_token');
     }
 
     final token = auth != null && auth.startsWith('Bearer ') ? auth.substring(7) : null;

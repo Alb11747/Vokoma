@@ -42,34 +42,82 @@ void main() {
     expect(s(), EngineState.paused);
   });
 
-  test('a step completes when the position moves', () {
-    fakeAsync((async) {
-      final positions = StreamController<Duration>.broadcast();
-      var done = false;
-      nextPositionChange(
-        positions.stream,
-        const Duration(seconds: 10),
-        const Duration(seconds: 3),
-      ).then((_) => done = true);
-      positions.add(const Duration(seconds: 10)); // same frame reported again
-      async.flushMicrotasks();
-      expect(done, isFalse);
-      positions.add(const Duration(milliseconds: 9983));
-      async.flushMicrotasks();
-      expect(done, isTrue);
-      expect(positions.hasListener, isFalse);
-    });
-  });
+  group('frame step completion', () {
+    late StreamController<Duration> positions;
+    late StreamController<bool> seeking;
+    late bool isSeeking;
+    late bool done;
 
-  test('a step that cannot move (first frame) completes after the timeout', () {
-    fakeAsync((async) {
-      final positions = StreamController<Duration>.broadcast();
-      var done = false;
-      nextPositionChange(positions.stream, Duration.zero, const Duration(seconds: 3)).then((_) => done = true);
-      async.elapse(const Duration(milliseconds: 2999));
-      expect(done, isFalse);
-      async.elapse(const Duration(milliseconds: 1));
-      expect(done, isTrue);
+    void start({required bool backward, Duration from = const Duration(seconds: 10)}) {
+      positions = StreamController<Duration>.broadcast();
+      seeking = StreamController<bool>.broadcast();
+      isSeeking = false;
+      done = false;
+      frameStepDone(
+        backward: backward,
+        positions: positions.stream,
+        from: from,
+        seeking: seeking.stream,
+        isSeeking: () => isSeeking,
+        timeout: const Duration(seconds: 3),
+      ).then((_) => done = true);
+    }
+
+    void seek(bool on) {
+      isSeeking = on;
+      seeking.add(on);
+    }
+
+    test('a back step waits for its seek to end, not for the position to move', () {
+      fakeAsync((async) {
+        start(backward: true);
+        positions.add(const Duration(milliseconds: 10016)); // playback still ticking
+        seek(true);
+        positions.add(const Duration(milliseconds: 9983));
+        async.flushMicrotasks();
+        expect(done, isFalse);
+        seek(false);
+        async.flushMicrotasks();
+        expect(done, isTrue);
+        expect(positions.hasListener || seeking.hasListener, isFalse);
+      });
+    });
+
+    test('a back step slower than the timeout is not released before its seek ends', () {
+      fakeAsync((async) {
+        start(backward: true);
+        seek(true);
+        async.elapse(const Duration(seconds: 10));
+        expect(done, isFalse);
+        seek(false);
+        async.flushMicrotasks();
+        expect(done, isTrue);
+      });
+    });
+
+    test('a forward step completes when the position moves outside a seek', () {
+      fakeAsync((async) {
+        start(backward: false);
+        positions.add(const Duration(seconds: 10)); // same frame reported again
+        seek(true);
+        positions.add(const Duration(seconds: 12)); // during an unrelated seek
+        async.flushMicrotasks();
+        expect(done, isFalse);
+        seek(false);
+        positions.add(const Duration(milliseconds: 12016));
+        async.flushMicrotasks();
+        expect(done, isTrue);
+      });
+    });
+
+    test('a step that cannot move (first frame) completes after the timeout', () {
+      fakeAsync((async) {
+        start(backward: true, from: Duration.zero);
+        async.elapse(const Duration(milliseconds: 2999));
+        expect(done, isFalse);
+        async.elapse(const Duration(milliseconds: 1));
+        expect(done, isTrue);
+      });
     });
   });
 }

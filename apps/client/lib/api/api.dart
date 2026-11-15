@@ -30,6 +30,9 @@ class Api {
   Future<String>? _refreshing;
   bool _signedOut = false;
 
+  /// The refresh's session write in progress, if any.
+  Future<void>? _writing;
+
   /// Called once when the server rejects the refresh token, which means the
   /// device was revoked or the token expired and the user must log in again.
   void Function()? onSignedOut;
@@ -174,11 +177,21 @@ class Api {
       throw const SessionExpiredException();
     }
     final grant = TokenGrant.fromJson(_decode(response));
+    // Logout may have started while the request was in flight. Its clear must
+    // win: neither store nor use what the server sent.
+    if (_signedOut) throw const SessionExpiredException();
     _session = StoredSession(server: server, refreshToken: grant.refreshToken, deviceId: grant.deviceId);
     // Persist the rotated token before using the new access token. If this
     // write fails, the error surfaces; the server still accepts the previous
-    // refresh token for a short grace period.
-    await _store.write(_session);
+    // refresh token for a short grace period. _signOut waits for this write
+    // before clearing, so a logout during it still leaves the store empty.
+    final write = _writing = _store.write(_session);
+    try {
+      await write;
+    } finally {
+      _writing = null;
+    }
+    if (_signedOut) throw const SessionExpiredException();
     _accept(grant);
     return grant.accessToken;
   }
@@ -192,6 +205,9 @@ class Api {
     if (_signedOut) return;
     _signedOut = true;
     _accessToken = null;
+    // Clear after a refresh's write in progress, or that write would restore
+    // the session. Its error, if any, is reported to the refresh's caller.
+    await _writing?.then((_) {}, onError: (Object _) {});
     await _store.clear();
     if (notify) onSignedOut?.call();
   }

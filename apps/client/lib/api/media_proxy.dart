@@ -110,6 +110,10 @@ class MediaProxy {
     final request = await _client.openUrl(incoming.method, target);
     request.followRedirects = false;
     request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+    // The proxy does not forward Content-Encoding (autoUncompress is off so
+    // byte ranges stay exact), so the body must arrive unencoded. HttpClient
+    // asks for gzip by default.
+    request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
     for (final name in _forwardedRequestHeaders) {
       final value = incoming.headers.value(name);
       if (value != null) request.headers.set(name, value);

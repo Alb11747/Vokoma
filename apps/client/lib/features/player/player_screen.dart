@@ -78,13 +78,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is KeyUpEvent) return KeyEventResult.ignored;
-    final keyboard = HardwareKeyboard.instance;
-    final action = actionFor(
-      event.logicalKey,
-      shift: keyboard.isShiftPressed,
-      ctrl: keyboard.isControlPressed,
-      alt: keyboard.isAltPressed,
-    );
+    final action = actionForKeyboard(event.logicalKey, HardwareKeyboard.instance);
     if (action == null) return KeyEventResult.ignored;
     final isRepeat = event is KeyRepeatEvent;
     switch (action) {

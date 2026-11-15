@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 import 'package:vokoma/api/api.dart';
 import 'package:vokoma/api/token_store.dart';
 
@@ -166,6 +169,92 @@ void main() {
     expect(store.session, isNull);
   });
 
+  group('a refresh racing logout', () {
+    late _HeldClient client;
+    late _HeldStore heldStore;
+    late Api api;
+    late String token;
+
+    setUp(() async {
+      client = _HeldClient();
+      heldStore = _HeldStore();
+      api = await Api.login(
+        server: server.uri,
+        username: FakeServer.username,
+        password: FakeServer.password,
+        deviceName: 'test',
+        platform: 'windows',
+        store: heldStore,
+        client: client,
+      );
+      token = await api.accessToken();
+      heldStore.writeStarted = false;
+    });
+    tearDown(() => api.close());
+
+    Future<void> until(bool Function() condition) async {
+      while (!condition()) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+    }
+
+    // Logout takes the cached access token, then a 401 elsewhere starts a
+    // refresh that the server answers before it sees the logout.
+    Future<Future<void>> startRace(Completer<void> logoutSend) async {
+      client.holdRequest['/api/auth/logout'] = logoutSend;
+      final logout = api.logout();
+      final refresh = expectLater(api.accessTokenAfterRejection(token), throwsA(isA<SessionExpiredException>()));
+      await until(() => server.refreshCalls == 1);
+      return Future.wait([logout, refresh]);
+    }
+
+    test('an answer that arrives while logout clears the store is dropped', () async {
+      final logoutSend = Completer<void>();
+      final refreshAnswer = client.holdResponse['/api/auth/refresh'] = Completer<void>();
+      heldStore.holdClear = Completer<void>();
+      heldStore.holdWrite = Completer<void>();
+      final done = await startRace(logoutSend);
+      await until(() => client.arrived.contains('/api/auth/refresh'));
+      logoutSend.complete();
+      await until(() => heldStore.clearStarted);
+      refreshAnswer.complete();
+      await pumpEventQueue();
+      heldStore.holdClear!.complete();
+      heldStore.holdWrite!.complete();
+      await done;
+      expect(heldStore.writeStarted, isFalse);
+      expect(heldStore.session, isNull);
+      await expectLater(api.accessToken(), throwsA(isA<SessionExpiredException>()));
+    });
+
+    test('a write in progress when logout starts is cleared after it', () async {
+      final logoutSend = Completer<void>();
+      heldStore.holdWrite = Completer<void>();
+      final done = await startRace(logoutSend);
+      await until(() => heldStore.writeStarted);
+      logoutSend.complete();
+      await until(() => server.logoutCalls == 1);
+      await pumpEventQueue();
+      heldStore.holdWrite!.complete();
+      await done;
+      expect(heldStore.session, isNull);
+      await expectLater(api.accessToken(), throwsA(isA<SessionExpiredException>()));
+    });
+  });
+
+  test('a retried refresh within the grace period gets the same new token', () async {
+    final api = await login();
+    final spent = store.session!.refreshToken;
+    server.expireAccessTokens();
+    await api.roots();
+    final rotated = store.session!.refreshToken;
+    // As if the response had been lost: present the spent token again.
+    store.session = StoredSession(server: server.uri, refreshToken: spent, deviceId: 'dev-1');
+    final retried = (await Api.restore(store))!;
+    expect((await retried.roots()).length, 1);
+    expect(store.session!.refreshToken, rotated);
+  });
+
   test('tokens only ever travel in headers', () async {
     final api = await login();
     server.expireAccessTokens();
@@ -182,4 +271,49 @@ void main() {
       isTrue,
     );
   });
+}
+
+/// Holds chosen requests before they are sent, and chosen responses after
+/// they have fully arrived, to order a race with logout.
+class _HeldClient extends http.BaseClient {
+  final _inner = http.Client();
+  final holdRequest = <String, Completer<void>>{};
+  final holdResponse = <String, Completer<void>>{};
+  final arrived = <String>{};
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    final path = request.url.path;
+    await holdRequest[path]?.future;
+    final response = await _inner.send(request);
+    final body = await response.stream.toBytes();
+    arrived.add(path);
+    await holdResponse[path]?.future;
+    return http.StreamedResponse(Stream.value(body), response.statusCode, headers: response.headers, request: request);
+  }
+
+  @override
+  void close() => _inner.close();
+}
+
+/// A token store whose writes and clears can be held, like a slow keystore.
+class _HeldStore extends MemoryTokenStore {
+  Completer<void>? holdWrite;
+  Completer<void>? holdClear;
+  bool writeStarted = false;
+  bool clearStarted = false;
+
+  @override
+  Future<void> write(StoredSession value) async {
+    writeStarted = true;
+    await holdWrite?.future;
+    await super.write(value);
+  }
+
+  @override
+  Future<void> clear() async {
+    clearStarted = true;
+    await holdClear?.future;
+    await super.clear();
+  }
 }
