@@ -8,3 +8,7 @@ server/dist/
 server/config.json
 server/token-secret
 server/data/
+
+# Release pipeline output (never source files).
+/release/
+/.vpk/
