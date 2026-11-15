@@ -62,13 +62,15 @@ class MpvEngine implements PlayerEngine {
   bool _opened = false;
   bool _muted = false;
   bool _seeking = false;
+  String _demuxerSeekOffset = '0';
   EngineState _state = EngineState.idle;
 
   @override
-  Future<void> open(Uri uri, {Map<String, String> httpHeaders = const {}, String? fileName}) async {
-    await _native.setProperty('hr-seek-demuxer-offset', hrSeekDemuxerOffsetFor(fileName));
+  Future<void> open(Uri uri, {Map<String, String> httpHeaders = const {}, String? fileName, bool play = true}) async {
+    _demuxerSeekOffset = hrSeekDemuxerOffsetFor(fileName);
+    await _native.setProperty('hr-seek-demuxer-offset', _demuxerSeekOffset);
     // media_kit passes httpHeaders to mpv's `http-header-fields` option.
-    await _player.open(Media(uri.toString(), httpHeaders: httpHeaders), play: true);
+    await _player.open(Media(uri.toString(), httpHeaders: httpHeaders), play: play);
     _opened = true;
     _emitState();
   }
@@ -91,15 +93,15 @@ class MpvEngine implements PlayerEngine {
       _native.command(seekCommand(offset, relative: true, mode: mode));
 
   @override
-  Future<void> stepForward() => _step('frame-step', backward: false);
+  Future<bool> stepForward() => _step('frame-step', backward: false);
 
   /// Seek-based back step: mpv seeks to the previous keyframe and decodes up
   /// to the frame before. Exact in every benchmark run; reverse playback
   /// mode is deliberately not used (docs/ARCHITECTURE.md, section 3).
   @override
-  Future<void> stepBackward() => _step('frame-back-step', backward: true);
+  Future<bool> stepBackward() => _step('frame-back-step', backward: true);
 
-  Future<void> _step(String command, {required bool backward}) async {
+  Future<bool> _step(String command, {required bool backward}) async {
     final done = frameStepDone(
       backward: backward,
       positions: _player.stream.position,
@@ -109,8 +111,64 @@ class MpvEngine implements PlayerEngine {
       timeout: stepTimeout,
     );
     await _native.command([command]);
-    await done;
+    return done;
   }
+
+  /// A seek is done when mpv reports `seeking` off, exactly as a back step
+  /// (which is itself a seek) is.
+  @override
+  Future<bool> seekAndWait(Duration time, {required bool relative, SeekMode mode = SeekMode.exact}) async {
+    final done = frameStepDone(
+      backward: true,
+      positions: _player.stream.position,
+      from: _player.state.position,
+      seeking: _seekingController.stream,
+      isSeeking: () => _seeking,
+      timeout: stepTimeout,
+    );
+    await _native.command(seekCommand(time, relative: relative, mode: mode));
+    return done;
+  }
+
+  @override
+  Future<Duration> currentPosition() async {
+    final seconds = double.tryParse(await _native.getProperty('time-pos'));
+    return seconds == null ? _player.state.position : Duration(microseconds: (seconds * 1e6).round());
+  }
+
+  @override
+  Future<EngineDiagnostics> diagnostics() async {
+    // getProperty returns '' for a property mpv does not have right now.
+    Future<String?> get(String name) async {
+      final value = await _native.getProperty(name);
+      return value.isEmpty ? null : value;
+    }
+
+    final hwdec = await get('hwdec-current');
+    final offset = double.tryParse(await get('hr-seek-demuxer-offset') ?? '');
+    return EngineDiagnostics(
+      engine: 'mpv',
+      engineVersion: await get('mpv-version'),
+      ffmpegVersion: await get('ffmpeg-version'),
+      hardwareDecoding: hwdec == 'no' ? null : hwdec,
+      decoder: await get('video-codec'),
+      container: await get('file-format'),
+      codec: await get('video-format'),
+      pixelFormat: await get('video-params/pixelformat'),
+      width: int.tryParse(await get('video-params/w') ?? ''),
+      height: int.tryParse(await get('video-params/h') ?? ''),
+      frameRate: double.tryParse(await get('container-fps') ?? ''),
+      demuxerSeekOffset: offset == null ? null : Duration(microseconds: (offset * 1e6).round()),
+    );
+  }
+
+  /// mpv reads the option at every seek, so the override applies from the
+  /// next seek or back step on.
+  @override
+  Future<void> overrideDemuxerSeekOffset(Duration? offset) => _native.setProperty(
+    'hr-seek-demuxer-offset',
+    offset == null ? _demuxerSeekOffset : (offset.inMicroseconds / 1e6).toString(),
+  );
 
   @override
   Future<void> setSpeed(double speed) => _player.setRate(speed);
@@ -231,6 +289,7 @@ EngineState engineStateOf({
 }
 
 /// Completes when a frame step has finished. Subscribe before issuing it.
+/// True when mpv signalled the end, false when the timeout released it.
 ///
 /// A back step is a seek, and mpv ignores a back step issued while a seek is
 /// running, so it is done only when mpv reports [seeking] off again. Position
@@ -243,7 +302,7 @@ EngineState engineStateOf({
 /// ([isSeeking]); then it completes when that seek ends, so the next step is
 /// not sent into it.
 @visibleForTesting
-Future<void> frameStepDone({
+Future<bool> frameStepDone({
   required bool backward,
   required Stream<Duration> positions,
   required Duration from,
@@ -251,24 +310,26 @@ Future<void> frameStepDone({
   required bool Function() isSeeking,
   required Duration timeout,
 }) {
-  final done = Completer<void>();
+  final done = Completer<bool>();
   var timedOut = false;
-  void finish() {
-    if (!done.isCompleted) done.complete();
+  void finish(bool signalled) {
+    if (!done.isCompleted) done.complete(signalled);
   }
 
   final subscriptions = [
     seeking.listen((s) {
-      if (!s && (backward || timedOut)) finish();
+      // After the timeout, the end of the seek that was still running
+      // counts as the step's own end only for back steps.
+      if (!s && (backward || timedOut)) finish(backward);
     }),
     if (!backward)
       positions.listen((p) {
-        if (p != from && !isSeeking()) finish();
+        if (p != from && !isSeeking()) finish(true);
       }),
   ];
   final timer = Timer(timeout, () {
     timedOut = true;
-    if (!isSeeking()) finish();
+    if (!isSeeking()) finish(false);
   });
   return done.future.whenComplete(() {
     timer.cancel();

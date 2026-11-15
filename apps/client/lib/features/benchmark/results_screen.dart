@@ -1,0 +1,116 @@
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../../platform/device.dart';
+import 'results.dart';
+
+/// The results file as a table, newest first, with Share / copy.
+class ResultsScreen extends StatefulWidget {
+  const ResultsScreen({super.key});
+
+  @override
+  State<ResultsScreen> createState() => _ResultsScreenState();
+}
+
+class _ResultsScreenState extends State<ResultsScreen> {
+  late final Future<(ResultsLog, String)> _load = () async {
+    final log = await ResultsLog.open();
+    return (log, await log.read());
+  }();
+
+  Future<void> _share(ResultsLog log, String content) async {
+    if (Platform.isAndroid) return Device.shareText(content, subject: 'Vokoma engine benchmark');
+    await Clipboard.setData(ClipboardData(text: '${log.file.path}\n\n$content'));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('File path and results copied')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Benchmark results')),
+    body: FutureBuilder(
+      future: _load,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) return Center(child: Text('Could not read the results: ${snapshot.error}'));
+        final data = snapshot.data;
+        if (data == null) return const Center(child: CircularProgressIndicator());
+        final (log, content) = data;
+        final rows = ResultsLog.rowsOf(content);
+        return ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: FilledButton.icon(
+                onPressed: content.isEmpty ? null : () => _share(log, content),
+                icon: const Icon(Icons.share),
+                label: const Text('Share / copy results'),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SelectableText(log.file.path, style: Theme.of(context).textTheme.bodySmall),
+            const SizedBox(height: 8),
+            if (rows.isEmpty) const Text('No results yet.') else _table(rows),
+          ],
+        );
+      },
+    ),
+  );
+
+  Widget _table(List<ResultRow> rows) => SingleChildScrollView(
+    scrollDirection: Axis.horizontal,
+    child: DataTable(
+      columns: const [
+        DataColumn(label: Text('File')),
+        DataColumn(label: Text('Kind')),
+        DataColumn(label: Text('Back step\nmedian / p95 ms')),
+        DataColumn(label: Text('Exact\nback steps')),
+        DataColumn(label: Text('Exact seek\nmedian ms')),
+        DataColumn(label: Text('Timeouts')),
+      ],
+      rows: [
+        for (final row in rows) ...[
+          DataRow(
+            cells: [
+              DataCell(Text(row.file)),
+              DataCell(Text(row.error == null ? row.kind : 'Failed: ${row.error}')),
+              DataCell(Text(_timing(row.backStep))),
+              DataCell(Text(_exactness(row.backStep))),
+              DataCell(Text(_ms(row.exactSeekMedianMs))),
+              DataCell(Text(row.error == null ? '${row.timeouts}' : '')),
+            ],
+          ),
+          if (row.backStepOffset0 case final offset0?)
+            DataRow(
+              cells: [
+                DataCell(Text('  same, .ts offset 0')),
+                const DataCell(Text('')),
+                DataCell(Text(_timing(offset0))),
+                DataCell(Text(_exactness(offset0))),
+                const DataCell(Text('')),
+                DataCell(Text('${offset0['timeouts']}')),
+              ],
+            ),
+        ],
+      ],
+    ),
+  );
+
+  static String _ms(Object? ms) => ms is num ? ms.round().toString() : '–';
+
+  static String _timing(Map<String, dynamic>? s) => s == null ? '' : '${_ms(s['medianMs'])} / ${_ms(s['p95Ms'])}';
+
+  /// `38 / 40 (stuck 2)`: exact out of attempted, then any other landings.
+  static String _exactness(Map<String, dynamic>? s) {
+    if (s == null) return '';
+    if (s['classified'] == 0) return 'frame rate unknown';
+    final other = [
+      for (final k in ['stuck', 'skipped', 'wrongDirection'])
+        if ((s[k] as int) > 0) '${k == 'wrongDirection' ? 'wrong way' : k} ${s[k]}',
+    ];
+    return '${s['exact']} / ${s['attempted']}${other.isEmpty ? '' : ' (${other.join(', ')})'}';
+  }
+}

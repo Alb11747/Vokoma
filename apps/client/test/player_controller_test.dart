@@ -8,21 +8,21 @@ import 'package:vokoma/features/player/player_controller.dart';
 /// Records calls; steps complete only when the test releases them.
 class FakeEngine implements PlayerEngine {
   final calls = <String>[];
-  final pendingSteps = <Completer<void>>[];
+  final pendingSteps = <Completer<bool>>[];
   @override
   double speed = 1.0;
   @override
   bool muted = false;
 
-  void finishStep() => pendingSteps.removeAt(0).complete();
+  void finishStep() => pendingSteps.removeAt(0).complete(true);
 
   @override
-  Future<void> stepBackward() => _step('back');
+  Future<bool> stepBackward() => _step('back');
   @override
-  Future<void> stepForward() => _step('forward');
-  Future<void> _step(String name) {
+  Future<bool> stepForward() => _step('forward');
+  Future<bool> _step(String name) {
     calls.add(name);
-    final c = Completer<void>();
+    final c = Completer<bool>();
     pendingSteps.add(c);
     return c.future;
   }

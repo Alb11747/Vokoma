@@ -4,7 +4,11 @@ import 'release.dart';
 import 'update_service.dart';
 
 class UpdateScreen extends StatelessWidget {
-  const UpdateScreen({super.key});
+  const UpdateScreen({super.key, this.benchmark});
+
+  /// The Benchmark section, shown when signed in.
+  final Widget? benchmark;
+
   @override
   Widget build(BuildContext context) {
     final service = UpdateService.instance;
@@ -39,6 +43,7 @@ class UpdateScreen extends StatelessWidget {
             Text(service.status),
             if (service.applyError != null) Text(service.applyError!),
             OutlinedButton(onPressed: service.check, child: const Text('Check now')),
+            ?benchmark,
           ],
         ),
       ),

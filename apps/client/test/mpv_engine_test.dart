@@ -47,6 +47,7 @@ void main() {
     late StreamController<bool> seeking;
     late bool isSeeking;
     late bool done;
+    bool? signalled;
 
     void start({required bool backward, Duration from = const Duration(seconds: 10)}) {
       positions = StreamController<Duration>.broadcast();
@@ -60,7 +61,10 @@ void main() {
         seeking: seeking.stream,
         isSeeking: () => isSeeking,
         timeout: const Duration(seconds: 3),
-      ).then((_) => done = true);
+      ).then((s) {
+        done = true;
+        signalled = s;
+      });
     }
 
     void seek(bool on) {
@@ -79,6 +83,7 @@ void main() {
         seek(false);
         async.flushMicrotasks();
         expect(done, isTrue);
+        expect(signalled, isTrue);
         expect(positions.hasListener || seeking.hasListener, isFalse);
       });
     });
@@ -107,6 +112,7 @@ void main() {
         positions.add(const Duration(milliseconds: 12016));
         async.flushMicrotasks();
         expect(done, isTrue);
+        expect(signalled, isTrue);
       });
     });
 
@@ -117,6 +123,7 @@ void main() {
         expect(done, isFalse);
         async.elapse(const Duration(milliseconds: 1));
         expect(done, isTrue);
+        expect(signalled, isFalse); // the benchmark counts this as a timeout
       });
     });
   });
