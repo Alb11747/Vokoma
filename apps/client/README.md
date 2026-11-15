@@ -93,12 +93,13 @@ one minute without pointer or keyboard interaction and no open player, including
 Updates are never applied during a player session. Channel changes never downgrade.
 
 Release workflow: main pushes debounce for 30 minutes, then run all server/client
-checks and build both native packages. A rolling nightly replaces prior release
-assets; a `vX.Y.Z` tag produces stable. Android build codes share one increasing
+checks and build both native packages. Each nightly uploads all assets to a draft before publication; three published
+nightlies are retained; a `vX.Y.Z` tag produces stable. Android build codes share one increasing
 workflow counter across channels. Do not delete/recreate the release workflow's
 run history or lower its counter. Nightly versions are X.Y.Z-nightly.build; stable
 versions match the tag. From Actions,
-Release → Run workflow → dry_run builds/signs artifacts without publishing. Never
+Release → Run workflow → dry_run uses a debug-signed APK and throwaway manifest key, without production
+secrets or publication. Never
 use pull-request artifacts for distribution: they are debug-signed and cannot
 update a production installation because the certificate differs.
 
@@ -126,3 +127,12 @@ prove those device behaviors. Velopack checksum behavior is documented in its
 [UpdateManager source](https://github.com/velopack/velopack/blob/1.2.161/src/lib-csharp/UpdateManager.cs).
 Android silent-install conditions are in the
 [SessionParams API](https://developer.android.com/reference/android/content/pm/PackageInstaller.SessionParams#setRequireUserAction(int)).
+
+Production signing setup: create a `release-signing` GitHub environment with selected
+deployment policies for branch `main` and tag pattern `v*`. Move
+`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and
+`UPDATE_SIGNING_KEY` into that environment and remove the repository-level copies.
+Only the publication job reads them, after rechecking that its main/tag commit is
+an ancestor of origin/main. Dry runs cannot produce updates trusted by the app.
+Failed Windows apply attempts are remembered by version and shown in About / updates;
+the launcher restarts the player on failure instead of closing it on every launch.

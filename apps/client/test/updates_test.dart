@@ -14,9 +14,15 @@ void main() {
     expect(compare('v0.1.1', '0.1.1-nightly.999'), greaterThan(0));
     expect(() => ReleaseVersion.parse('0.1.1-malicious'), throwsFormatException);
   });
-  test('stable discovery excludes prereleases; nightly uses explicit rolling tag', () {
-    expect(releaseEndpoint(UpdateChannel.stable).path, endsWith('/releases/latest'));
-    expect(releaseEndpoint(UpdateChannel.nightly).path, endsWith('/releases/tags/nightly'));
+  test('nightly discovery ignores drafts and stable releases during publication', () {
+    final releases = [
+      {'draft': true, 'prerelease': true, 'tag_name': 'nightly-new', 'published_at': '2026-02-01T00:00:00Z'},
+      {'draft': false, 'prerelease': false, 'tag_name': 'v1.0.0', 'published_at': '2026-02-01T00:00:00Z'},
+      {'draft': false, 'prerelease': true, 'tag_name': 'nightly-old', 'published_at': '2026-01-01T00:00:00Z'},
+    ];
+    expect(selectRelease(releases, UpdateChannel.nightly)['tag_name'], 'nightly-old');
+    releases.first['draft'] = false;
+    expect(selectRelease(releases, UpdateChannel.nightly)['tag_name'], 'nightly-new');
   });
   test('authentic manifest accepted, corruption and a different publisher rejected', () async {
     // RFC 8032 test vector 1: independent known signature, not produced by our code.

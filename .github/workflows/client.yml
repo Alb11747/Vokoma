@@ -93,6 +93,12 @@ jobs:
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: '8.0.x'
+      - name: Test Windows apply recovery
+        run: dotnet run --project tools/windows-updater/tests/RecoveryTests.csproj
+        working-directory: .
+      - id: version
+        run: node tools/release/version.mjs
+        working-directory: .
       - name: Package per-user Windows installer
         shell: pwsh
         working-directory: .
@@ -101,7 +107,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           dotnet tool install --tool-path .vpk vpk --version 1.2.161
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          .vpk/vpk.exe pack --packId Vokoma --packVersion '0.1.1-nightly.2' --packDir apps/client/build/windows/x64/runner/Release --mainExe VokomaLauncher.exe --outputDir release --channel win
+          .vpk/vpk.exe pack --packId Vokoma --packVersion '${{ steps.version.outputs.version }}' --packDir apps/client/build/windows/x64/runner/Release --mainExe VokomaLauncher.exe --outputDir release --channel win
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:

@@ -13,6 +13,41 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'release.dart';
 
 class UpdateService extends ChangeNotifier {
+  UpdateService({
+    http.Client? client,
+    this.publicKey = updatePublicKey,
+    String? platform,
+    this.installTimeout = const Duration(minutes: 5),
+    Future<void> Function(Directory directory, String version)? windowsApply,
+    Future<String?> Function(String path)? androidInstall,
+    Future<String?> Function()? windowsError,
+  }) : _http = client ?? http.Client(),
+       _platform = platform ?? Platform.operatingSystem,
+       _windowsApply = windowsApply ?? _launchWindows,
+       _androidInstall = androidInstall ?? _installAndroid,
+       _windowsError = windowsError ?? _readWindowsError;
+  final String publicKey;
+  final String _platform;
+  final Duration installTimeout;
+  final Future<void> Function(Directory, String) _windowsApply;
+  final Future<String?> Function(String) _androidInstall;
+  final Future<String?> Function() _windowsError;
+  String? applyError;
+  final Set<Object> _players = {};
+  bool get playerOpen => _players.isNotEmpty;
+
+  /// Reserve synchronously before navigation; release only this player's lease
+  /// after its engine and proxy have finished closing.
+  VoidCallback reservePlayer() {
+    final token = Object();
+    _players.add(token);
+    interact();
+    return () {
+      _players.remove(token);
+      interact();
+    };
+  }
+
   static final instance = UpdateService();
   static const _native = MethodChannel('app.vokoma/updates');
   UpdateChannel channel = UpdateChannel.nightly;
@@ -20,7 +55,6 @@ class UpdateService extends ChangeNotifier {
   String currentVersion = '0.0.0+0';
   String status = 'Not checked';
   DateTime? lastCheck;
-  bool playerOpen = false;
   bool installing = false;
   bool _busy = false;
   bool _ready = false;
@@ -30,33 +64,18 @@ class UpdateService extends ChangeNotifier {
   late Directory _directory;
   Timer? _timer;
   DateTime _nextCheck = DateTime.now();
-  final _http = http.Client();
+  final http.Client _http;
 
   void interact() => _interaction = DateTime.now();
-  void setPlayerOpen(bool value) {
-    playerOpen = value;
-    interact();
-  }
 
   Future<void> start() async {
     try {
-      _preferences = await SharedPreferences.getInstance();
-      channel = UpdateChannel.values.byName(_preferences.getString('updateChannel') ?? 'nightly');
-      policy = InstallPolicy.values.byName(_preferences.getString('installPolicy') ?? 'restart');
-      lastCheck = DateTime.tryParse(_preferences.getString('updateLastCheck') ?? '');
       final info = await PackageInfo.fromPlatform();
-      currentVersion = '${info.version}+${info.buildNumber}';
-      _directory = Directory('${(await getApplicationSupportDirectory()).path}/updates');
-      await _directory.create(recursive: true);
-      _ready = true;
-      _busy = true;
-      try {
-        await _apply(startup: true);
-      } catch (error) {
-        status = 'Pending update failed: $error';
-      } finally {
-        _busy = false;
-      }
+      await initialize(
+        preferences: await SharedPreferences.getInstance(),
+        directory: Directory('${(await getApplicationSupportDirectory()).path}/updates'),
+        version: '${info.version}+${info.buildNumber}',
+      );
       await check();
       _timer = Timer.periodic(const Duration(seconds: 30), (_) async {
         if (!_ready || _busy || installing) return;
@@ -76,6 +95,31 @@ class UpdateService extends ChangeNotifier {
       });
     } catch (error) {
       status = 'Updates unavailable: $error';
+      notifyListeners();
+    }
+  }
+
+  Future<void> initialize({
+    required SharedPreferences preferences,
+    required Directory directory,
+    required String version,
+  }) async {
+    _preferences = preferences;
+    channel = UpdateChannel.values.byName(preferences.getString('updateChannel') ?? 'nightly');
+    policy = InstallPolicy.values.byName(preferences.getString('installPolicy') ?? 'restart');
+    lastCheck = DateTime.tryParse(preferences.getString('updateLastCheck') ?? '');
+    currentVersion = version;
+    _directory = directory;
+    await directory.create(recursive: true);
+    _ready = true;
+    _busy = true;
+    try {
+      if (_platform == 'windows') applyError = await _windowsError();
+      await _apply(startup: true);
+    } catch (error) {
+      applyError = 'Pending update failed: $error';
+    } finally {
+      _busy = false;
       notifyListeners();
     }
   }
@@ -111,7 +155,7 @@ class UpdateService extends ChangeNotifier {
     status = 'Checking';
     notifyListeners();
     try {
-      final release = jsonDecode(utf8.decode(await _get(releaseEndpoint(channel)))) as Map<String, dynamic>;
+      final release = selectRelease(jsonDecode(utf8.decode(await _get(releaseEndpoint(channel)))), channel);
       if (release['draft'] == true || (channel == UpdateChannel.stable && release['prerelease'] == true)) {
         throw const FormatException('Not a published release on this channel');
       }
@@ -131,7 +175,9 @@ class UpdateService extends ChangeNotifier {
 
       final bytes = await _get(url('update.json'));
       final signature = await _get(url('update.json.sig'));
-      if (!await verifyManifest(bytes, signature)) throw const FormatException('Invalid update signature');
+      if (!await verifyManifest(bytes, signature, publicKey: publicKey)) {
+        throw const FormatException('Invalid update signature');
+      }
       final manifest = ReleaseManifest.parse(bytes, channel);
       lastCheck = DateTime.now();
       await _preferences.setString('updateLastCheck', lastCheck!.toIso8601String());
@@ -139,7 +185,7 @@ class UpdateService extends ChangeNotifier {
         status = 'Up to date (channel changes never downgrade)';
         return;
       }
-      final asset = manifest.assets[Platform.isWindows ? 'windows' : 'android'];
+      final asset = manifest.assets[_platform == 'windows' ? 'windows' : 'android'];
       if (asset == null) throw const FormatException('Missing platform package');
       status = 'Downloading ${manifest.version}';
       notifyListeners();
@@ -198,7 +244,11 @@ class UpdateService extends ChangeNotifier {
     final metadata = File('${_directory.path}/update.json');
     if (!await metadata.exists()) return;
     final bytes = await metadata.readAsBytes();
-    if (!await verifyManifest(bytes, await File('${_directory.path}/update.json.sig').readAsBytes())) {
+    if (!await verifyManifest(
+      bytes,
+      await File('${_directory.path}/update.json.sig').readAsBytes(),
+      publicKey: publicKey,
+    )) {
       throw const FormatException('Pending update signature invalid');
     }
     // A channel change invalidates a pending update from the old channel.
@@ -206,7 +256,12 @@ class UpdateService extends ChangeNotifier {
     if (json['channel'] != channel.name) return;
     final manifest = ReleaseManifest.parse(bytes, channel);
     if (ReleaseVersion.parse(manifest.version).compareTo(ReleaseVersion.parse(currentVersion)) <= 0) return;
-    final asset = manifest.assets[Platform.isWindows ? 'windows' : 'android']!;
+    if (_platform == 'windows' && _preferences.getString('updateAttemptedVersion') == manifest.version) {
+      applyError ??=
+          'The update to ${manifest.version} did not complete. Automatic retry is disabled for this version.';
+      return;
+    }
+    final asset = manifest.assets[_platform == 'windows' ? 'windows' : 'android']!;
     final file = File('${_directory.path}/${asset.name}');
     if (!await _matches(file, asset)) throw const FormatException('Pending package changed');
     // Re-check after every asynchronous verification; opening a player wins.
@@ -221,7 +276,7 @@ class UpdateService extends ChangeNotifier {
     _attempted = true;
     installing = true;
     try {
-      if (Platform.isWindows) {
+      if (_platform == 'windows') {
         // Feed is constructed from authenticated bytes, never fetched from the network.
         final feed = {
           'Assets': [
@@ -239,19 +294,42 @@ class UpdateService extends ChangeNotifier {
         if (playerOpen) return;
         await File('${_directory.path}/releases.win.json').writeAsString(jsonEncode(feed));
         if (playerOpen) return;
-        final launcher = File('${File(Platform.resolvedExecutable).parent.path}/VokomaLauncher.exe');
-        if (!await launcher.exists()) throw const FileSystemException('Install the Windows release to enable updates');
-        await Process.start(launcher.path, ['--apply', _directory.path, '$pid'], mode: ProcessStartMode.detached);
-        exit(0);
-      } else if (Platform.isAndroid) {
-        final result = await _native.invokeMethod<String>('install', {'path': file.path});
+        await _preferences.setString('updateAttemptedVersion', manifest.version);
+        await _windowsApply(_directory, manifest.version);
+      } else if (_platform == 'android') {
+        final result = await _androidInstall(file.path).timeout(
+          installTimeout,
+          onTimeout: () {
+            throw TimeoutException(
+              'Android install did not report a result. Check the system installer before trying again.',
+            );
+          },
+        );
         status = result ?? 'Install requested';
         // Do not repeatedly prompt on each timer tick. A new launch/check retries.
         await metadata.delete();
       }
+    } catch (error) {
+      applyError = 'Update install failed: $error';
+      rethrow;
     } finally {
       installing = false;
     }
+  }
+
+  static Future<void> _launchWindows(Directory directory, String version) async {
+    final launcher = File('${File(Platform.resolvedExecutable).parent.path}/VokomaLauncher.exe');
+    if (!await launcher.exists()) throw const FileSystemException('Install the Windows release to enable updates');
+    await Process.start(launcher.path, ['--apply', directory.path, '$pid'], mode: ProcessStartMode.detached);
+    exit(0);
+  }
+
+  static Future<String?> _installAndroid(String path) => _native.invokeMethod<String>('install', {'path': path});
+  static Future<String?> _readWindowsError() async {
+    final root = Platform.environment['LOCALAPPDATA'];
+    if (root == null) return null;
+    final file = File('$root/Vokoma/updater-error.txt');
+    return await file.exists() ? file.readAsString() : null;
   }
 
   @override

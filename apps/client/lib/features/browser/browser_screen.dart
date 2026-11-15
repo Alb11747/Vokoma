@@ -146,10 +146,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
           onTap: () {
             if (UpdateService.instance.installing) return;
             // Reserve playback before the next frame constructs PlayerScreen.
-            UpdateService.instance.setPlayerOpen(true);
+            final releasePlayback = UpdateService.instance.reservePlayer();
             Navigator.of(context).push(
               MaterialPageRoute<void>(
-                builder: (_) => PlayerScreen(api: widget.api, file: file),
+                builder: (_) => PlayerScreen(api: widget.api, file: file, releasePlayback: releasePlayback),
               ),
             );
           },

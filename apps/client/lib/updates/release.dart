@@ -82,8 +82,27 @@ Future<bool> verifyManifest(List<int> bytes, List<int> signature, {String public
       signature: Signature(signature, publicKey: SimplePublicKey(base64Decode(publicKey), type: KeyPairType.ed25519)),
     );
 
-/// GitHub's latest endpoint excludes prereleases, which is essential for stable.
+/// Each nightly becomes public only after all draft assets have been uploaded.
+Map<String, dynamic> selectRelease(dynamic response, UpdateChannel channel) {
+  if (channel == UpdateChannel.stable) return response as Map<String, dynamic>;
+  final releases = (response as List)
+      .cast<Map<String, dynamic>>()
+      .where(
+        (release) =>
+            release['draft'] == false &&
+            release['prerelease'] == true &&
+            ((release['tag_name'] as String).startsWith('nightly-') || release['tag_name'] == 'nightly'),
+      )
+      .toList();
+  releases.sort(
+    (a, b) => DateTime.parse(b['published_at'] as String).compareTo(DateTime.parse(a['published_at'] as String)),
+  );
+  if (releases.isEmpty) throw const FormatException('No published nightly');
+  return releases.first;
+}
+
 Uri releaseEndpoint(UpdateChannel channel) => Uri.https(
   'api.github.com',
-  '/repos/Alb11747/Vokoma/releases/${channel == UpdateChannel.nightly ? 'tags/nightly' : 'latest'}',
+  '/repos/Alb11747/Vokoma/releases${channel == UpdateChannel.stable ? '/latest' : ''}',
+  channel == UpdateChannel.nightly ? {'per_page': '100'} : null,
 );

@@ -9,7 +9,6 @@ import '../../api/media_proxy.dart';
 import '../../engine/mpv_engine.dart';
 import '../../engine/player_engine.dart';
 import '../../format.dart';
-import '../../updates/update_service.dart';
 import '../../platform/window.dart';
 import 'hotkeys.dart';
 import 'player_controller.dart';
@@ -17,10 +16,11 @@ import 'player_controller.dart';
 /// Plays one file. Keyboard: the M0 hotkeys. Mouse clicks on the video do
 /// nothing. Touch (Android): a tap shows or hides the controls.
 class PlayerScreen extends StatefulWidget {
-  const PlayerScreen({super.key, required this.api, required this.file});
+  const PlayerScreen({super.key, required this.api, required this.file, required this.releasePlayback});
 
   final Api api;
   final FileEntry file;
+  final VoidCallback releasePlayback;
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
@@ -41,7 +41,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void initState() {
     super.initState();
-    UpdateService.instance.setPlayerOpen(true);
     _errors = _engine.errorStream.listen(_showError);
     if (Platform.isAndroid) unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
     unawaited(_open());
@@ -77,7 +76,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     unawaited(
       _engine.dispose().whenComplete(() async {
         await _proxy?.close();
-        UpdateService.instance.setPlayerOpen(false);
+        widget.releasePlayback();
       }),
     );
     super.dispose();
