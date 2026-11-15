@@ -31,7 +31,21 @@ export function openDatabase(path: string, steps = migrations) {
         try {
           db.exec(`VACUUM INTO '${temporary.replaceAll("'", "''")}'`);
           chmodSync(temporary, 0o600);
-          renameSync(temporary, `${path}.bak`);
+          // Another opener may have migrated before this copy was taken. Keep
+          // the copy only if it still holds the pre-migration version, so a
+          // late opener cannot replace the real recovery copy.
+          const copy = new DatabaseSync(temporary, { readOnly: true });
+          let copied: number;
+          try {
+            copied = (
+              copy.prepare("PRAGMA user_version").get() as {
+                user_version: number;
+              }
+            ).user_version;
+          } finally {
+            copy.close();
+          }
+          if (copied === version) renameSync(temporary, `${path}.bak`);
         } finally {
           if (existsSync(temporary)) unlinkSync(temporary);
         }
