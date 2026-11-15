@@ -11,22 +11,28 @@ on:
         default: true
 permissions:
   contents: read
-# Cancel obsolete nightly builds during the debounce. Stable tags are independent.
-concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && format('dry-{0}', github.ref) || (startsWith(github.ref, 'refs/tags/') && github.ref || 'nightly') }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 jobs:
   prepare:
+    concurrency:
+      group: release-debounce-${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && format('dry-{0}', github.ref) || github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     outputs:
       name: ${{ steps.version.outputs.name }}
       build: ${{ steps.version.outputs.build }}
       version: ${{ steps.version.outputs.version }}
       channel: ${{ steps.version.outputs.channel }}
+      production: ${{ steps.trust.outputs.production }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+      - id: trust
+        env:
+          PRODUCTION: ${{ github.event_name == 'push' || !inputs.dry_run }}
+        run: |
+          if [ "$PRODUCTION" = true ]; then node tools/release/trusted-ref.mjs; fi
+          echo "production=$PRODUCTION" >> "$GITHUB_OUTPUT"
       - name: Batch main pushes for 30 minutes
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: sleep 1800
@@ -80,18 +86,12 @@ jobs:
           cache: true
       - run: flutter pub get --enforce-lockfile
       - run: dart format --output=none --set-exit-if-changed lib test && flutter analyze && flutter test
-      - name: Sign and build Android
+      - name: Build Android (debug-signed for dry runs, unsigned for production signing)
         if: runner.os == 'Linux'
         env:
-          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          VOKOMA_UNSIGNED_APK: ${{ needs.prepare.outputs.production }}
         run: |
           set -euo pipefail
-          test -n "$KEYSTORE"
-          export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
-          trap 'rm -f "$ANDROID_KEYSTORE_PATH"' EXIT
-          printf '%s' "$KEYSTORE" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
           flutter build apk --release --build-name '${{ needs.prepare.outputs.name }}' --build-number '${{ needs.prepare.outputs.build }}'
           mkdir -p ../../release
           cp build/app/outputs/flutter-apk/app-release.apk ../../release/Vokoma.apk
@@ -102,6 +102,10 @@ jobs:
         if: runner.os == 'Windows'
         with:
           dotnet-version: '8.0.x'
+      - name: Test Windows apply recovery
+        if: runner.os == 'Windows'
+        working-directory: .
+        run: dotnet run --project tools/windows-updater/tests/RecoveryTests.csproj
       - name: Package per-user Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
@@ -119,12 +123,10 @@ jobs:
           path: release/
           if-no-files-found: error
           retention-days: 7
-  publish:
+  dry-run:
+    if: needs.prepare.outputs.production != 'true'
     needs: [prepare, server, client]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -132,44 +134,76 @@ jobs:
           pattern: release-*
           merge-multiple: true
           path: release
+      - name: Sign test metadata with a throwaway key (never production secrets)
+        env:
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: node tools/release/sign.mjs release --dry-run
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dry-run-release-not-for-installation
+          path: release/
+          retention-days: 7
+  publish:
+    if: needs.prepare.outputs.production == 'true'
+    needs: [prepare, server, client]
+    runs-on: ubuntu-latest
+    environment: release-signing
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Check ancestry again before reading production secrets
+        run: node tools/release/trusted-ref.mjs
+      - name: Require the restricted signing environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/environments/release-signing" > "$RUNNER_TEMP/signing-environment.json"
+          node -e "const e=JSON.parse(require('fs').readFileSync(process.env.RUNNER_TEMP+'/signing-environment.json')); if (!e.deployment_branch_policy?.custom_branch_policies) throw Error('Configure release-signing with selected main branch and v* tag deployment policies first');"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Sign the APK with the production keystore
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          keystore="$RUNNER_TEMP/release.jks"
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "$KEYSTORE" | base64 --decode > "$keystore"
+          signer=$(printf '%s\n' "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$signer" sign --ks "$keystore" --ks-key-alias "$ANDROID_KEY_ALIAS" --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEYSTORE_PASSWORD release/Vokoma.apk
+          "$signer" verify --verbose release/Vokoma.apk
       - name: Authenticate update metadata
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
           CHANNEL: ${{ needs.prepare.outputs.channel }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: node tools/release/sign.mjs release
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: signed-release
-          path: release/
-          retention-days: 7
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        if: github.event_name == 'push' || !inputs.dry_run
         with:
           name: server-image
-      - name: Push image and publish release
-        if: (github.event_name == 'push' || !inputs.dry_run) && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+      - name: Publish complete release before advancing image tags
         env:
           GH_TOKEN: ${{ github.token }}
           CHANNEL: ${{ needs.prepare.outputs.channel }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/vokoma-server"
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker load < server-image.tar.gz
-          docker tag vokoma-server:release "$image:$VERSION"
-          docker tag vokoma-server:release "$image:$CHANNEL"
-          docker push "$image:$VERSION"
-          docker push "$image:$CHANNEL"
-          if [ "$CHANNEL" = nightly ]; then
-            # One rolling release bounds retained APKs and Windows packages.
-            # An incomplete replacement fails closed at signature/hash verification.
-            if gh release view nightly >/dev/null 2>&1; then
-              gh release delete nightly --cleanup-tag --yes
-            fi
-            gh release create nightly --target "$GITHUB_SHA" --prerelease --title "Nightly $VERSION" --notes "Automated nightly $GITHUB_SHA"
-            gh release upload nightly release/*
-          else
-            gh release create "$GITHUB_REF_NAME" release/* --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
-          fi
+          node tools/release/publish.mjs

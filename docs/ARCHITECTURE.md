@@ -388,16 +388,17 @@ Each device picks a channel; the default is `nightly`.
 |---|---|
 | Windows | Velopack: per-user install, background download, signature check, versions installed side by side so rollback is possible |
 | Android | The app downloads the APK from GitHub Releases and installs it with Android's package installer. Silent on Android 12+ after one approval |
-| Server and web | Docker image on GHCR. The server pulls the channel tag; each container restarts only when idle |
+| Server and web | Docker image on GHCR. M0 uses a manual pull and restart; server self-update comes later |
 | iOS / macOS (later) | macOS through Velopack. iOS cannot self-update outside TestFlight or the App Store |
 
 The user setting from PLAN.md applies on every platform: install on the next restart, or
 install when idle and never during playback.
 
 **M0 release decisions.** Main releases use a cancellable 30-minute debounce and
-one rolling prerelease named `nightly`, bounding stored release assets. Stable is
+a draft per nightly build, published only with complete assets; retain three public
+nightlies. Image tags advance after release publication. Stable is
 `vX.Y.Z`; nightly uses the next patch after the highest stable tag (initial base
-0.1.0). Android versionCode is the shared release workflow run number plus one;
+0.1.0). Android versionCode is the shared release workflow run number plus one; old nightly runs must not be re-run;
 Windows and Android versionName use `X.Y.Z-nightly.build`, which Velopack orders
 below the corresponding stable tag.
 Stable display/versionName is X.Y.Z, with the same increasing build code.

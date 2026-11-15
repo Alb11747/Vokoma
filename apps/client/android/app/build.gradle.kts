@@ -42,7 +42,8 @@ android {
     buildTypes {
         release {
             // PR/local builds have no secrets and remain debug-signed.
-            signingConfig = signingConfigs.findByName("distribution") ?: signingConfigs.getByName("debug")
+            signingConfig = if (System.getenv("VOKOMA_UNSIGNED_APK") == "true") null
+                else signingConfigs.findByName("distribution") ?: signingConfigs.getByName("debug")
         }
     }
 }

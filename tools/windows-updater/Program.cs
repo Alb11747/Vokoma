@@ -1,28 +1,35 @@
 using System.Diagnostics;
 using Velopack;
+using Vokoma;
 
-// Dart owns policy and signature verification. Never auto-apply an unauthenticated
-// package on startup; only the explicit --apply path may invoke the updater.
 VelopackApp.Build().SetAutoApplyOnStartup(false).Run();
-try {
-    if (args.Length == 3 && args[0] == "--apply") {
-        var manager = new UpdateManager(args[1]);
-        var update = await manager.CheckForUpdatesAsync();
-        if (update == null) return;
-        await manager.DownloadUpdatesAsync(update);
-        // The Flutter process holds the playback gate until it exits.
-        try { Process.GetProcessById(int.Parse(args[2])).WaitForExit(); }
-        catch (ArgumentException) { /* It already exited. */ }
-        manager.ApplyUpdatesAndRestart(update.TargetFullRelease);
-        return;
-    }
+void StartPlayer() {
     var player = Process.Start(new ProcessStartInfo(
         Path.Combine(AppContext.BaseDirectory, "vokoma.exe")) { UseShellExecute = false });
     player?.WaitForExit();
-} catch (Exception error) {
-    // WinExe has no console: retain diagnostics in the user's app data.
+}
+void ReportError(string error) {
     var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Vokoma");
     Directory.CreateDirectory(directory);
-    File.WriteAllText(Path.Combine(directory, "updater-error.txt"), error.ToString());
+    File.WriteAllText(Path.Combine(directory, "updater-error.txt"), error);
+}
+try {
+    if (args.Length == 3 && args[0] == "--apply") {
+        void WaitForPlayer() {
+            try { Process.GetProcessById(int.Parse(args[2])).WaitForExit(); }
+            catch (ArgumentException) { /* The old player already exited. */ }
+        }
+        await ApplyRecovery.Run(async () => {
+            var manager = new UpdateManager(args[1]);
+            var update = await manager.CheckForUpdatesAsync();
+            if (update == null) return null;
+            await manager.DownloadUpdatesAsync(update);
+            return () => manager.ApplyUpdatesAndRestart(update.TargetFullRelease);
+        }, WaitForPlayer, ReportError, StartPlayer);
+    } else {
+        StartPlayer();
+    }
+} catch (Exception error) {
+    ReportError(error.ToString());
     Environment.ExitCode = 1;
 }

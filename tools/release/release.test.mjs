@@ -50,3 +50,47 @@ test('CI signer binds complete payload bytes and refuses a mismatched secret', (
   const result = spawnSync(process.execPath,[signScript,cwd],{cwd,env:{...env,UPDATE_SIGNING_KEY:wrong.export({type:'pkcs8',format:'pem'})}});
   assert.notEqual(result.status,0);
 });
+
+test('production signing rejects branch refs and tags outside main history', async () => {
+  const {assertTrustedRef} = await import('./trusted-ref.mjs');
+  const cwd = mkdtempSync(join(tmpdir(),'vokoma-trust-test-'));
+  const git = args => execFileSync('git',args,{cwd,stdio:'pipe'});
+  git(['init']);
+  const commit = () => git(['-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-m','fixture']);
+  commit(); git(['update-ref','refs/remotes/origin/main','HEAD']);
+  assert.doesNotThrow(()=>assertTrustedRef('refs/heads/main',git));
+  assert.doesNotThrow(()=>assertTrustedRef('refs/tags/v1.2.3',git));
+  assert.throws(()=>assertTrustedRef('refs/heads/untrusted',git));
+  commit();
+  assert.throws(()=>assertTrustedRef('refs/tags/v1.2.3',git));
+});
+
+test('dry runs sign with a throwaway key without consulting the production secret', () => {
+  const cwd=mkdtempSync(join(tmpdir(),'vokoma-dry-test-'));
+  writeFileSync(join(cwd,'Vokoma.apk'),'debug fixture');
+  writeFileSync(join(cwd,'Vokoma-full.nupkg'),'windows fixture');
+  // No public key file exists here and an invalid production secret must be ignored.
+  execFileSync(process.execPath,[signScript,cwd,'--dry-run'],{cwd,env:{...process.env,UPDATE_SIGNING_KEY:'must not read this',CHANNEL:'nightly',VERSION:'0.1.1-nightly.98'}});
+  const bytes=readFileSync(join(cwd,'update.json'));
+  const signature=readFileSync(join(cwd,'update.json.sig'));
+  assert(verify(null,bytes,readFileSync(join(cwd,'update-test-public.pem')),signature));
+  assert(!verify(null,bytes,readFileSync('tools/release/update-public.pem'),signature));
+});
+
+test('publication exposes complete drafts before images and prunes only after success', async () => {
+  const {publish}=await import('./publish.mjs');
+  const events=[];
+  const releases=Array.from({length:5},(_,i)=>({tagName:`nightly-build-${5-i}`,isDraft:false,isPrerelease:true,publishedAt:`2026-01-0${5-i}T00:00:00Z`}));
+  await publish({files:['release/update.json','release/Vokoma.apk'],channel:'nightly',version:'build-5',sha:'fixture',
+    gh:async args=>{events.push(args);return args[1]==='list'?JSON.stringify(releases):'';},pushImage:async()=>events.push(['image'])});
+  assert(events[0].includes('--draft')); assert(events[0].includes('release/Vokoma.apk'));
+  assert(events[1].includes('--draft=false')); assert.equal(events[2][0],'image');
+  assert.deepEqual(events.filter(e=>e[1]==='delete').map(e=>e[2]),['nightly-build-2','nightly-build-1']);
+  for (const failing of ['create','edit']) {
+    const failed=[];
+    await assert.rejects(publish({files:['fixture'],channel:'nightly',version:'new',sha:'fixture',
+      gh:async args=>{failed.push(args);if(args[1]===failing)throw Error('upload/publication failed');return '';},
+      pushImage:async()=>failed.push(['image'])}));
+    assert(!failed.some(e=>e[0]==='image'||e[1]==='delete'));
+  }
+});
