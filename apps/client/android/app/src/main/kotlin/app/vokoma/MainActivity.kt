@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -37,6 +38,30 @@ class MainActivity : FlutterActivity() {
             if (Build.VERSION.SDK_INT >= 33) registerReceiver(installResult, filter, Context.RECEIVER_NOT_EXPORTED)
             else registerReceiver(installResult, filter)
             receiverRegistered = true
+        }
+        // Device facts and the share sheet for the engine benchmark (lib/platform/device.dart).
+        MethodChannel(engine.dartExecutor.binaryMessenger, "app.vokoma/device").setMethodCallHandler { call, result ->
+            when (call.method) {
+                "info" -> result.success(mapOf(
+                    "manufacturer" to Build.MANUFACTURER, "model" to Build.MODEL,
+                    "osVersion" to Build.VERSION.RELEASE, "sdk" to Build.VERSION.SDK_INT,
+                    "hardware" to Build.HARDWARE, "socModel" to (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else null),
+                ))
+                "shareText" -> {
+                    val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                        .putExtra(Intent.EXTRA_SUBJECT, call.argument<String>("subject"))
+                        .putExtra(Intent.EXTRA_TEXT, call.argument<String>("text"))
+                    startActivity(Intent.createChooser(send, null))
+                    result.success(null)
+                }
+                // A sleeping screen would stop rendering in the middle of a run.
+                "keepScreenOn" -> {
+                    if (call.arguments == true) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
         }
         MethodChannel(engine.dartExecutor.binaryMessenger, "app.vokoma/updates").setMethodCallHandler { call, result ->
             if (call.method != "install") { result.notImplemented(); return@setMethodCallHandler }

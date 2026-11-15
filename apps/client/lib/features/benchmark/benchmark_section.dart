@@ -1,0 +1,76 @@
+import 'package:flutter/material.dart';
+
+import '../../api/api.dart';
+import 'benchmark_screen.dart';
+import 'results.dart';
+import 'results_screen.dart';
+
+/// The Benchmark part of About: run the standard set, fill or clear it,
+/// see results. [folderFiles] are the files of the folder the browser is
+/// showing, if any.
+class BenchmarkSection extends StatefulWidget {
+  const BenchmarkSection({super.key, required this.api, this.folderFiles = const []});
+
+  final Api api;
+  final List<BenchFile> folderFiles;
+
+  @override
+  State<BenchmarkSection> createState() => _BenchmarkSectionState();
+}
+
+class _BenchmarkSectionState extends State<BenchmarkSection> {
+  BenchmarkSet? _set;
+
+  @override
+  void initState() {
+    super.initState();
+    BenchmarkSet.open().then((set) {
+      if (mounted) setState(() => _set = set);
+    });
+  }
+
+  Future<void> _add() async {
+    final added = await _set!.add(widget.folderFiles);
+    if (!mounted) return;
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added $added files')));
+  }
+
+  Future<void> _clear() async {
+    await _set!.clear();
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final set = _set;
+    if (set == null) return const SizedBox.shrink();
+    final files = set.files;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 24),
+        Text('Benchmark', style: Theme.of(context).textTheme.titleMedium),
+        Text('Standard set: ${files.length} files'),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            FilledButton(
+              onPressed: files.isEmpty ? null : () => startBenchmark(context, widget.api, files),
+              child: const Text('Run on the standard set'),
+            ),
+            OutlinedButton(
+              onPressed: () =>
+                  Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const ResultsScreen())),
+              child: const Text('Results'),
+            ),
+            if (widget.folderFiles.isNotEmpty)
+              OutlinedButton(onPressed: _add, child: const Text("Add current folder's files to the benchmark set")),
+            OutlinedButton(onPressed: files.isEmpty ? null : _clear, child: const Text('Clear set')),
+          ],
+        ),
+      ],
+    );
+  }
+}

@@ -32,7 +32,7 @@ debug key; do not distribute it. Release builds use the existing CI keystore sec
 ```
 lib/api/          Server API client, token storage, and the loopback media proxy
 lib/engine/       PlayerEngine and MpvEngine — the only code that touches mpv/media_kit
-lib/features/     login, browser, player (hotkeys, controller, screen)
+lib/features/     login, browser, player (hotkeys, controller, screen), benchmark
 lib/platform/     Calls into the native runners (Windows fullscreen)
 windows/          Runner; libmpv.cmake pins the bundled libmpv
 test/             Unit tests, with a fake server in test/fake_server.dart
@@ -72,6 +72,27 @@ seeks and back steps land on the right frame; see `hrSeekDemuxerOffsetFor` in
 2023 build; CI checks the result. Pass `-DVOKOMA_PINNED_LIBMPV=OFF` to CMake to
 use media_kit's library instead. Android still uses media_kit's library (an mpv
 snapshot from October 2023 with FFmpeg 6.0).
+
+## Engine benchmark
+
+`lib/features/benchmark` repeats `tools/engine-bench/bench.lua` inside the app,
+through `PlayerEngine` only: 20 forward and 20 seek-based back steps at 31 % and
+62 % of the file, 10 far keyframe and 10 far exact seeks, and ±5 s seeks, with
+the file paused and the video on screen. Each operation is timed from the
+command to the engine's frame-shown signal (the one frame stepping uses; for
+mpv, `seeking` turning off). An operation the engine releases by its own
+timeout, or that takes over 30 s, is a timeout, not a sample; three in a row
+end the series. Steps are classified against the container frame rate: exact
+(one frame, within half a frame), stuck, skipped or wrong direction. `.ts`
+files repeat the back steps with the demuxer seek offset overridden to 0
+(benchmark only) to compare with the normal 3 s.
+
+Start it with a long press or right click on a file (Run engine benchmark), or
+from About / updates → Benchmark (Run on the standard set; the set is filled
+with Add current folder's files and kept in preferences). One JSON object per
+file is appended to `Vokoma/engine-benchmark.jsonl` in the app's documents
+folder; the results screen shows it as a table and shares it (Android) or
+copies the path and content (Windows). Nothing is uploaded.
 
 ## Hotkeys (Windows, M0)
 

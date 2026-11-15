@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import '../../api/api.dart';
 import '../../updates/update_screen.dart';
 import '../../format.dart';
+import '../benchmark/benchmark_screen.dart';
+import '../benchmark/benchmark_section.dart';
+import '../benchmark/results.dart';
 import '../../updates/update_service.dart';
 import '../player/player_screen.dart';
 
@@ -22,6 +25,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
   final _folders = <String>[];
   Future<Object>? _load;
 
+  /// The folder listing on screen, for "Add current folder's files" in About.
+  Listing? _shown;
+
   @override
   void initState() {
     super.initState();
@@ -30,6 +36,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
   void _reload() {
     final root = _root;
+    _shown = null;
     setState(() {
       _load = root == null ? widget.api.roots() : widget.api.entries(root.id, path: _folders.join('/'));
     });
@@ -65,6 +72,34 @@ class _BrowserScreenState extends State<BrowserScreen> {
     widget.onSignedOut(message);
   }
 
+  List<BenchFile> _folderFiles() {
+    final root = _root, shown = _shown;
+    if (root == null || shown == null) return const [];
+    return [
+      for (final e in shown.entries)
+        if (e is FileEntry) BenchFile.of(root.id, shown.path, e),
+    ];
+  }
+
+  void _openAbout() => Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (_) => UpdateScreen(
+        benchmark: BenchmarkSection(api: widget.api, folderFiles: _folderFiles()),
+      ),
+    ),
+  );
+
+  /// Long press (Android) or right click (Windows) on a file.
+  Future<void> _fileMenu(MediaRoot root, String folder, FileEntry file, Offset position) async {
+    final overlay = Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final run = await showMenu<bool>(
+      context: context,
+      position: RelativeRect.fromRect(position & Size.zero, Offset.zero & overlay.size),
+      items: const [PopupMenuItem(value: true, child: Text('Run engine benchmark'))],
+    );
+    if (run == true && mounted) startBenchmark(context, widget.api, [BenchFile.of(root.id, folder, file)]);
+  }
+
   @override
   Widget build(BuildContext context) {
     final root = _root;
@@ -79,12 +114,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
           leading: atTop ? null : IconButton(icon: const Icon(Icons.arrow_back), onPressed: _up),
           title: Text(atTop ? 'Vokoma' : [root.name, ..._folders].join(' / '), overflow: TextOverflow.ellipsis),
           actions: [
-            IconButton(
-              tooltip: 'About / updates',
-              icon: const Icon(Icons.system_update),
-              onPressed: () =>
-                  Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const UpdateScreen())),
-            ),
+            IconButton(tooltip: 'About / updates', icon: const Icon(Icons.system_update), onPressed: _openAbout),
             IconButton(icon: const Icon(Icons.refresh), tooltip: 'Reload', onPressed: _reload),
             PopupMenuButton<void>(
               itemBuilder: (_) => [PopupMenuItem(onTap: _signOut, child: const Text('Sign out'))],
@@ -128,6 +158,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   }
 
   Widget _entryList(MediaRoot root, Listing listing) {
+    _shown = listing;
     if (listing.entries.isEmpty) return const Center(child: Text('This folder is empty.'));
     return ListView.builder(
       itemCount: listing.entries.length,
@@ -137,22 +168,26 @@ class _BrowserScreenState extends State<BrowserScreen> {
           title: Text(name),
           onTap: () => _openFolder(name),
         ),
-        final FileEntry file => ListTile(
-          leading: const Icon(Icons.movie_outlined),
-          title: Text(file.name),
-          subtitle: Text(
-            [formatSize(file.sizeBytes), if (file.duration != null) formatDuration(file.duration!)].join(' · '),
+        final FileEntry file => GestureDetector(
+          onLongPressStart: (d) => _fileMenu(root, listing.path, file, d.globalPosition),
+          onSecondaryTapUp: (d) => _fileMenu(root, listing.path, file, d.globalPosition),
+          child: ListTile(
+            leading: const Icon(Icons.movie_outlined),
+            title: Text(file.name),
+            subtitle: Text(
+              [formatSize(file.sizeBytes), if (file.duration != null) formatDuration(file.duration!)].join(' · '),
+            ),
+            onTap: () {
+              if (UpdateService.instance.installing) return;
+              // Reserve playback before the next frame constructs PlayerScreen.
+              final releasePlayback = UpdateService.instance.reservePlayer();
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => PlayerScreen(api: widget.api, file: file, releasePlayback: releasePlayback),
+                ),
+              );
+            },
           ),
-          onTap: () {
-            if (UpdateService.instance.installing) return;
-            // Reserve playback before the next frame constructs PlayerScreen.
-            final releasePlayback = UpdateService.instance.reservePlayer();
-            Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => PlayerScreen(api: widget.api, file: file, releasePlayback: releasePlayback),
-              ),
-            );
-          },
         ),
       },
     );
