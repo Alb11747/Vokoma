@@ -19,13 +19,13 @@ flutter pub get --enforce-lockfile
 dart format --output=none --set-exit-if-changed lib test
 flutter analyze
 flutter test
-flutter build apk --release     # Android, signed with the debug key for now
+flutter build apk --release     # Local/PR builds are debug-signed; never distribute
 flutter build windows --release # Windows (needs Windows and Visual Studio)
 ```
 
 CI (`.github/workflows/client.yml`) runs the same checks on pull requests and
 builds both platforms as workflow artifacts. The APK is signed with the Android
-debug key until release signing is set up (M0 part C); do not distribute it.
+debug key; do not distribute it. Release builds use the existing CI keystore secrets.
 
 ## Layout
 
@@ -81,3 +81,48 @@ speed · `F` fullscreen · `Shift+M`/`Ctrl+M` mute · `Esc` leaves fullscreen,
 then the player. Mouse clicks on the video and number keys do nothing.
 
 Android: tap the video to show play/pause, a seek bar and frame step buttons.
+
+## Releases and updates
+
+Install the Windows Setup executable or Android APK from this repository's GitHub
+Releases. Nightly is the default channel. About / updates (available before login
+and in the browser toolbar) shows current version, channel, last successful check,
+status and Check now. Checks run at launch and every four hours; downloads happen
+in the background. Choose install on next restart or install when idle. Idle means
+one minute without pointer interaction and no open player, including paused players.
+Updates are never applied during a player session. Channel changes never downgrade.
+
+Release workflow: main pushes debounce for 30 minutes, then run all server/client
+checks and build both native packages. A rolling nightly replaces prior release
+assets; a `vX.Y.Z` tag produces stable. Android build codes share one increasing
+workflow counter across channels. Do not delete/recreate the release workflow's
+run history or lower its counter. Windows version is X.Y.Z.build. From Actions,
+Release → Run workflow → dry_run builds/signs artifacts without publishing. Never
+use pull-request artifacts for distribution: they are debug-signed and cannot
+update a production installation because the certificate differs.
+
+The updater verifies the Ed25519 detached signature on update.json and checks the
+signed package SHA-256 and size, including immediately before applying. The public
+key is in lib/updates/release.dart and tools/release/update-public.pem. A key change
+requires shipping a client trusting it before changing the signing secret. No
+private key belongs in this repository. Windows uses Velopack 1.2.161 through a
+self-contained .NET launcher (no separate .NET installation needed); its own
+size/hash verification is additional integrity checking, not publisher signature
+verification. Windows Setup is per-user and not Authenticode signed; expect the
+initial SmartScreen warning. Delta packages are not generated.
+
+Android additionally compares APK package name, increasing versionCode and the
+exact installed signing certificate set. PackageInstaller validates the APK's
+signature at commit. Allow Vokoma to install unknown apps once when requested,
+then Check now again. Android 12+ requests USER_ACTION_NOT_REQUIRED for self-updates
+and declares UPDATE_PACKAGES_WITHOUT_USER_ACTION; OS policy and target-SDK rules
+can still require confirmation. Earlier Android versions require confirmation.
+Use Android 9+ (API 28); older versions are outside this implementation's support.
+
+Before release acceptance, test two successive builds on Windows and a real phone,
+both policies, both channels, playback veto, interrupted downloads, corrupt packages,
+certificate mismatch, denied approval and the OS confirmation fallback. CI does not
+prove those device behaviors. Velopack checksum behavior is documented in its
+[UpdateManager source](https://github.com/velopack/velopack/blob/1.2.161/src/lib-csharp/UpdateManager.cs).
+Android silent-install conditions are in the
+[SessionParams API](https://developer.android.com/reference/android/content/pm/PackageInstaller.SessionParams#setRequireUserAction(int)).

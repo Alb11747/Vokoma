@@ -1,3 +1,5 @@
+import '../../updates/update_screen.dart';
+
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -84,6 +86,15 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     final message = widget.message;
     return Scaffold(
+      appBar: AppBar(
+        actions: [
+          IconButton(
+            tooltip: 'About / updates',
+            icon: const Icon(Icons.system_update),
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const UpdateScreen())),
+          ),
+        ],
+      ),
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),

@@ -1,7 +1,10 @@
+import '../../updates/update_screen.dart';
+
 import 'package:flutter/material.dart';
 
 import '../../api/api.dart';
 import '../../format.dart';
+import '../../updates/update_service.dart';
 import '../player/player_screen.dart';
 
 /// Roots, then folders inside a root. Folders first, as the server sorts.
@@ -77,6 +80,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
           leading: atTop ? null : IconButton(icon: const Icon(Icons.arrow_back), onPressed: _up),
           title: Text(atTop ? 'Vokoma' : [root.name, ..._folders].join(' / '), overflow: TextOverflow.ellipsis),
           actions: [
+            IconButton(
+              tooltip: 'About / updates',
+              icon: const Icon(Icons.system_update),
+              onPressed: () =>
+                  Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const UpdateScreen())),
+            ),
             IconButton(icon: const Icon(Icons.refresh), tooltip: 'Reload', onPressed: _reload),
             PopupMenuButton<void>(
               itemBuilder: (_) => [PopupMenuItem(onTap: _signOut, child: const Text('Sign out'))],
@@ -135,11 +144,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
           subtitle: Text(
             [formatSize(file.sizeBytes), if (file.duration != null) formatDuration(file.duration!)].join(' · '),
           ),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute<void>(
-              builder: (_) => PlayerScreen(api: widget.api, file: file),
-            ),
-          ),
+          onTap: () => UpdateService.instance.installing
+              ? null
+              : Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => PlayerScreen(api: widget.api, file: file),
+                  ),
+                ),
         ),
       },
     );
