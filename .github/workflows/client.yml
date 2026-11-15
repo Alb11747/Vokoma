@@ -3,11 +3,17 @@ name: client
 on:
   pull_request:
     paths:
+      - tools/release/**
+      - tools/windows-updater/**
+      - .github/workflows/release.yml
       - apps/client/**
       - .github/workflows/client.yml
   push:
     branches: [main]
     paths:
+      - tools/release/**
+      - tools/windows-updater/**
+      - .github/workflows/release.yml
       - apps/client/**
       - .github/workflows/client.yml
   workflow_dispatch:
@@ -33,6 +39,8 @@ jobs:
           channel: stable
           flutter-version-file: apps/client/pubspec.yaml
           cache: true
+      - run: node --test tools/release/release.test.mjs
+        working-directory: .
       - run: flutter pub get --enforce-lockfile
       - run: dart format --output=none --set-exit-if-changed lib test
       - run: flutter analyze
