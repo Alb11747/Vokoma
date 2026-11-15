@@ -57,6 +57,10 @@ class _BenchmarkScreenState extends State<BenchmarkScreen> {
   String _progress = 'Starting';
   bool _cancelled = false;
 
+  /// Set once this route has been popped by Cancel or Back, so the end of the
+  /// run does not pop the route underneath as well.
+  bool _popped = false;
+
   @override
   void initState() {
     super.initState();
@@ -89,7 +93,7 @@ class _BenchmarkScreenState extends State<BenchmarkScreen> {
     } finally {
       widget.releasePlayback();
     }
-    if (!mounted) return;
+    if (!mounted || _popped) return;
     if (_cancelled) {
       Navigator.of(context).pop();
     } else {
@@ -147,7 +151,10 @@ class _BenchmarkScreenState extends State<BenchmarkScreen> {
     final total = widget.files.length;
     final file = widget.files[_index.clamp(0, total - 1)];
     return PopScope(
-      onPopInvokedWithResult: (didPop, _) => _cancel(),
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) _popped = true;
+        _cancel();
+      },
       child: Scaffold(
         appBar: AppBar(title: const Text('Engine benchmark')),
         body: Column(
