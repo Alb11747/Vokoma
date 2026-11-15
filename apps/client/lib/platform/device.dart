@@ -18,9 +18,10 @@ class Device {
     return {...base, ...?android};
   }
 
-  /// The Android share sheet with [text]. Android only.
-  static Future<void> shareText(String text, {String? subject}) =>
-      _channel.invokeMethod<void>('shareText', {'text': text, 'subject': subject});
+  /// The Android share sheet with a snapshot of [path], an app file, sent
+  /// as a content URI. Android only.
+  static Future<void> shareFile(String path, {String? subject}) =>
+      _channel.invokeMethod<void>('shareFile', {'path': path, 'subject': subject});
 
   /// Keeps the screen on during a benchmark run. Android only; a no-op elsewhere.
   static Future<void> keepScreenOn(bool on) async {

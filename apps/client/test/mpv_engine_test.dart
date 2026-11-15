@@ -46,25 +46,26 @@ void main() {
     late StreamController<Duration> positions;
     late StreamController<bool> seeking;
     late bool isSeeking;
-    late bool done;
-    bool? signalled;
+    late Duration current;
+    late bool sent;
+    bool? result;
 
-    void start({required bool backward, Duration from = const Duration(seconds: 10)}) {
-      positions = StreamController<Duration>.broadcast();
-      seeking = StreamController<bool>.broadcast();
-      isSeeking = false;
-      done = false;
-      frameStepDone(
-        backward: backward,
+    void start(FrameCommand kind, {Duration from = const Duration(seconds: 10), bool seekingAtStart = false}) {
+      positions = StreamController<Duration>.broadcast(sync: true);
+      seeking = StreamController<bool>.broadcast(sync: true);
+      isSeeking = seekingAtStart;
+      current = from;
+      sent = false;
+      result = null;
+      runUntilFrameShown(
+        kind: kind,
+        send: () async => sent = true,
         positions: positions.stream,
-        from: from,
+        position: () => current,
         seeking: seeking.stream,
         isSeeking: () => isSeeking,
         timeout: const Duration(seconds: 3),
-      ).then((s) {
-        done = true;
-        signalled = s;
-      });
+      ).then((s) => result = s);
     }
 
     void seek(bool on) {
@@ -72,58 +73,116 @@ void main() {
       seeking.add(on);
     }
 
-    test('a back step waits for its seek to end, not for the position to move', () {
+    void move(int ms) {
+      current = Duration(milliseconds: ms);
+      positions.add(current);
+    }
+
+    test('a back step completes on its own seek, not on position ticks', () {
       fakeAsync((async) {
-        start(backward: true);
-        positions.add(const Duration(milliseconds: 10016)); // playback still ticking
-        seek(true);
-        positions.add(const Duration(milliseconds: 9983));
+        start(FrameCommand.backward);
         async.flushMicrotasks();
-        expect(done, isFalse);
+        move(10016); // playback still ticking forward
+        seek(true);
+        move(9983);
+        async.flushMicrotasks();
+        expect(result, isNull);
         seek(false);
         async.flushMicrotasks();
-        expect(done, isTrue);
-        expect(signalled, isTrue);
+        expect(result, isTrue);
         expect(positions.hasListener || seeking.hasListener, isFalse);
+      });
+    });
+
+    test('an initial or stale seeking=false does not complete a back step or seek', () {
+      for (final kind in [FrameCommand.backward, FrameCommand.seek]) {
+        fakeAsync((async) {
+          start(kind);
+          async.flushMicrotasks();
+          seek(false); // mpv's initial notification, or a late one
+          async.flushMicrotasks();
+          expect(result, isNull, reason: '$kind');
+          seek(true);
+          seek(false);
+          async.flushMicrotasks();
+          expect(result, isTrue, reason: '$kind');
+        });
+      }
+    });
+
+    test('a fast back step whose seek notifications coalesced completes on the move', () {
+      fakeAsync((async) {
+        start(FrameCommand.backward);
+        async.flushMicrotasks();
+        move(9983);
+        async.flushMicrotasks();
+        expect(result, isTrue);
+        expect(async.elapsed, lessThan(const Duration(seconds: 1)));
+      });
+    });
+
+    test('a command sent while a seek runs waits for that seek to end first', () {
+      fakeAsync((async) {
+        start(FrameCommand.backward, seekingAtStart: true);
+        async.flushMicrotasks();
+        expect(sent, isFalse);
+        seek(false); // the earlier seek ends; not ours
+        async.flushMicrotasks();
+        expect(sent, isTrue);
+        expect(result, isNull);
+        seek(true);
+        seek(false);
+        async.flushMicrotasks();
+        expect(result, isTrue);
       });
     });
 
     test('a back step slower than the timeout is not released before its seek ends', () {
       fakeAsync((async) {
-        start(backward: true);
+        start(FrameCommand.backward);
+        async.flushMicrotasks();
         seek(true);
         async.elapse(const Duration(seconds: 10));
-        expect(done, isFalse);
+        expect(result, isNull);
         seek(false);
         async.flushMicrotasks();
-        expect(done, isTrue);
+        expect(result, isTrue);
       });
     });
 
-    test('a forward step completes when the position moves outside a seek', () {
+    test('a forward frame delivered during a seek counts once the seek clears', () {
       fakeAsync((async) {
-        start(backward: false);
-        positions.add(const Duration(seconds: 10)); // same frame reported again
+        start(FrameCommand.forward);
+        async.flushMicrotasks();
+        move(10000); // same frame reported again
         seek(true);
-        positions.add(const Duration(seconds: 12)); // during an unrelated seek
+        move(10016);
         async.flushMicrotasks();
-        expect(done, isFalse);
-        seek(false);
-        positions.add(const Duration(milliseconds: 12016));
+        expect(result, isNull);
+        seek(false); // no further position event follows
         async.flushMicrotasks();
-        expect(done, isTrue);
-        expect(signalled, isTrue);
+        expect(result, isTrue);
+        expect(async.elapsed, lessThan(const Duration(seconds: 1)));
       });
     });
 
-    test('a step that cannot move (first frame) completes after the timeout', () {
+    test('a forward step completes on a move outside a seek', () {
       fakeAsync((async) {
-        start(backward: true, from: Duration.zero);
+        start(FrameCommand.forward);
+        async.flushMicrotasks();
+        move(10016);
+        async.flushMicrotasks();
+        expect(result, isTrue);
+      });
+    });
+
+    test('a step that cannot move (first frame) completes false after the timeout', () {
+      fakeAsync((async) {
+        start(FrameCommand.backward, from: Duration.zero);
         async.elapse(const Duration(milliseconds: 2999));
-        expect(done, isFalse);
+        expect(result, isNull);
         async.elapse(const Duration(milliseconds: 1));
-        expect(done, isTrue);
-        expect(signalled, isFalse); // the benchmark counts this as a timeout
+        expect(result, isFalse); // the benchmark counts this as a timeout
       });
     });
   });

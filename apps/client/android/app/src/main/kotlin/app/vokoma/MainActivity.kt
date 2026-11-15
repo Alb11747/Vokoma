@@ -1,6 +1,7 @@
 package app.vokoma
 
 import android.app.PendingIntent
+import android.content.ClipData
 import android.content.Intent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -13,6 +14,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.view.WindowManager
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -47,13 +49,24 @@ class MainActivity : FlutterActivity() {
                     "osVersion" to Build.VERSION.RELEASE, "sdk" to Build.VERSION.SDK_INT,
                     "hardware" to Build.HARDWARE, "socModel" to (if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else null),
                 ))
-                "shareText" -> {
+                // A content URI to a snapshot, not the text in the Intent: the
+                // log grows with every run and would exceed the Binder limit.
+                // The copy also keeps a later append from changing what the
+                // receiving app reads.
+                "shareFile" -> try {
+                    val source = File(call.argument<String>("path")!!).canonicalFile
+                    require(source.path.startsWith(filesDir.parentFile!!.canonicalPath + "/")) { "Only app files can be shared" }
+                    val copy = File(File(cacheDir, "share").apply { mkdirs() }, source.name)
+                    source.copyTo(copy, overwrite = true)
+                    val uri = FileProvider.getUriForFile(this, "$packageName.share", copy)
                     val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                        .putExtra(Intent.EXTRA_STREAM, uri)
                         .putExtra(Intent.EXTRA_SUBJECT, call.argument<String>("subject"))
-                        .putExtra(Intent.EXTRA_TEXT, call.argument<String>("text"))
-                    startActivity(Intent.createChooser(send, null))
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    send.clipData = ClipData.newRawUri(null, uri)
+                    startActivity(Intent.createChooser(send, null).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
                     result.success(null)
-                }
+                } catch (error: Exception) { result.error("share", error.message, null) }
                 // A sleeping screen would stop rendering in the middle of a run.
                 "keepScreenOn" -> {
                     if (call.arguments == true) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

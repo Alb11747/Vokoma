@@ -120,6 +120,8 @@ class _BenchmarkScreenState extends State<BenchmarkScreen> {
     } on BenchmarkCancelled {
       return null;
     } catch (e) {
+      // Errors seen during the series are in the measurements; these are
+      // the ones that stopped the file from being measured at all.
       error = [e.toString(), ...errors].join('; ');
     } finally {
       if (mounted) setState(() => _engine = null);

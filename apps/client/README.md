@@ -79,11 +79,13 @@ snapshot from October 2023 with FFmpeg 6.0).
 through `PlayerEngine` only: 20 forward and 20 seek-based back steps at 31 % and
 62 % of the file, 10 far keyframe and 10 far exact seeks, and ±5 s seeks, with
 the file paused and the video on screen. Each operation is timed from the
-command to the engine's frame-shown signal (the one frame stepping uses; for
-mpv, `seeking` turning off). An operation the engine releases by its own
+command to the engine's frame-shown completion, the one frame stepping uses
+(`runUntilFrameShown` in `lib/engine/mpv_engine.dart`). An operation the engine releases by its own
 timeout, or that takes over 30 s, is a timeout, not a sample; three in a row
-end the series. Steps are classified against the container frame rate: exact
-(one frame, within half a frame), stuck, skipped or wrong direction. `.ts`
+end the series. Back steps are classified against the frame timestamps the
+forward steps visited over the same range, so variable frame rate files are
+judged correctly: exact, stuck, skipped, wrong direction or unverified. A
+series whose positioning seek fails is recorded as not measured. `.ts`
 files repeat the back steps with the demuxer seek offset overridden to 0
 (benchmark only) to compare with the normal 3 s.
 

@@ -47,7 +47,7 @@ class MpvEngine implements PlayerEngine {
 
   /// How long a frame step may show no sign of work before it counts as one
   /// that moves nothing (first or last frame). A step still seeking by then
-  /// is waited for to the end; see [frameStepDone].
+  /// is waited for to the end; see [runUntilFrameShown].
   static const stepTimeout = Duration(seconds: 3);
 
   late final Player _player;
@@ -101,34 +101,23 @@ class MpvEngine implements PlayerEngine {
   @override
   Future<bool> stepBackward() => _step('frame-back-step', backward: true);
 
-  Future<bool> _step(String command, {required bool backward}) async {
-    final done = frameStepDone(
-      backward: backward,
-      positions: _player.stream.position,
-      from: _player.state.position,
-      seeking: _seekingController.stream,
-      isSeeking: () => _seeking,
-      timeout: stepTimeout,
-    );
-    await _native.command([command]);
-    return done;
-  }
+  Future<bool> _step(String command, {required bool backward}) =>
+      _untilShown(backward ? FrameCommand.backward : FrameCommand.forward, [command]);
 
-  /// A seek is done when mpv reports `seeking` off, exactly as a back step
-  /// (which is itself a seek) is.
+  /// Benchmark only; expects the engine paused (see [runUntilFrameShown]).
   @override
-  Future<bool> seekAndWait(Duration time, {required bool relative, SeekMode mode = SeekMode.exact}) async {
-    final done = frameStepDone(
-      backward: true,
-      positions: _player.stream.position,
-      from: _player.state.position,
-      seeking: _seekingController.stream,
-      isSeeking: () => _seeking,
-      timeout: stepTimeout,
-    );
-    await _native.command(seekCommand(time, relative: relative, mode: mode));
-    return done;
-  }
+  Future<bool> seekAndWait(Duration time, {required bool relative, SeekMode mode = SeekMode.exact}) =>
+      _untilShown(FrameCommand.seek, seekCommand(time, relative: relative, mode: mode));
+
+  Future<bool> _untilShown(FrameCommand kind, List<String> command) => runUntilFrameShown(
+    kind: kind,
+    send: () => _native.command(command),
+    positions: _player.stream.position,
+    position: () => _player.state.position,
+    seeking: _seekingController.stream,
+    isSeeking: () => _seeking,
+    timeout: stepTimeout,
+  );
 
   @override
   Future<Duration> currentPosition() async {
@@ -288,53 +277,88 @@ EngineState engineStateOf({
   return playing ? EngineState.playing : EngineState.paused;
 }
 
-/// Completes when a frame step has finished. Subscribe before issuing it.
-/// True when mpv signalled the end, false when the timeout released it.
+/// What a command waited on by [runUntilFrameShown] does.
+enum FrameCommand { forward, backward, seek }
+
+/// Sends a frame step or seek with [send] and completes once its frame is
+/// shown: true when mpv signalled it, false when [timeout] released it.
 ///
-/// A back step is a seek, and mpv ignores a back step issued while a seek is
-/// running, so it is done only when mpv reports [seeking] off again. Position
-/// changes do not count: playback or an earlier seek can move the position
-/// before the step's own seek ends. A forward step is done when the position
-/// moves outside a seek.
-///
-/// After [timeout] with no completion the step is taken to move nothing
-/// (first or last frame) and completes, unless mpv is still seeking
-/// ([isSeeking]); then it completes when that seek ends, so the next step is
-/// not sent into it.
+/// Completion belongs to this command. mpv's property notifications can be
+/// initial values, late, or coalesced, so:
+/// - A seek that is still running first is waited for (up to [timeout]);
+///   its end would otherwise look like ours, and mpv drops a back step sent
+///   into it.
+/// - A back step or seek is done on a `seeking` true-to-false transition
+///   whose true arrived after [send] was called. A lone false (initial, or a
+///   seek so fast that the true was coalesced away) does not count by itself.
+/// - Any command is also done when the position, re-read on every position
+///   event and whenever `seeking` clears, has moved outside a seek: for a
+///   back step it must be earlier than the start, so playback still ticking
+///   forward cannot complete it; a seek ([FrameCommand.seek], benchmark
+///   only, engine paused) accepts any move.
+/// After [timeout] without completion the command counts as having moved
+/// nothing (first or last frame, or a stuck step) and completes false,
+/// unless mpv is still seeking; then the end of that seek decides, so the
+/// next command is not sent into it.
 @visibleForTesting
-Future<bool> frameStepDone({
-  required bool backward,
+Future<bool> runUntilFrameShown({
+  required FrameCommand kind,
+  required Future<void> Function() send,
   required Stream<Duration> positions,
-  required Duration from,
+  required Duration Function() position,
   required Stream<bool> seeking,
   required bool Function() isSeeking,
   required Duration timeout,
-}) {
+}) async {
+  if (isSeeking()) {
+    await Future.any([seeking.firstWhere((s) => !s, orElse: () => false), Future<void>.delayed(timeout)]);
+  }
+  final from = position();
   final done = Completer<bool>();
+  var sawSeek = false;
   var timedOut = false;
+  Duration? latest;
+  bool moved() {
+    final p = latest;
+    if (p == null) return false;
+    return kind == FrameCommand.backward ? p < from : p != from;
+  }
+
   void finish(bool signalled) {
     if (!done.isCompleted) done.complete(signalled);
   }
 
   final subscriptions = [
     seeking.listen((s) {
-      // After the timeout, the end of the seek that was still running
-      // counts as the step's own end only for back steps.
-      if (!s && (backward || timedOut)) finish(backward);
+      if (s) {
+        sawSeek = true;
+      } else if ((sawSeek && kind != FrameCommand.forward) || moved()) {
+        finish(true);
+      } else if (timedOut) {
+        finish(false);
+      }
     }),
-    if (!backward)
-      positions.listen((p) {
-        if (p != from && !isSeeking()) finish(true);
-      }),
+    positions.listen((p) {
+      latest = p;
+      if (!isSeeking() && moved()) finish(true);
+    }),
   ];
   final timer = Timer(timeout, () {
     timedOut = true;
     if (!isSeeking()) finish(false);
   });
-  return done.future.whenComplete(() {
+  void cleanUp() {
     timer.cancel();
     for (final s in subscriptions) {
       s.cancel();
     }
-  });
+  }
+
+  try {
+    await send();
+  } catch (_) {
+    cleanUp();
+    rethrow;
+  }
+  return done.future.whenComplete(cleanUp);
 }

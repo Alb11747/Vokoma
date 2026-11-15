@@ -105,6 +105,23 @@ Map<String, Object?> benchmarkRecord({
 class ResultRow {
   ResultRow(this.record);
 
+  /// Null unless [line] is a JSON record with the fields the table needs.
+  static ResultRow? tryParse(String line) {
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(line);
+    } on FormatException {
+      return null;
+    }
+    if (decoded is! Map<String, dynamic>) return null;
+    final file = decoded['file'], time = decoded['time'];
+    if (file is! Map<String, dynamic> || file['name'] is! String) return null;
+    if (time is! String || DateTime.tryParse(time) == null) return null;
+    final summary = decoded['summary'];
+    if (summary != null && summary is! Map<String, dynamic>) return null;
+    return ResultRow(decoded);
+  }
+
   final Map<String, dynamic> record;
 
   Map<String, dynamic> get _summary => (record['summary'] as Map<String, dynamic>?) ?? const {};
@@ -129,6 +146,8 @@ class ResultRow {
   Map<String, dynamic>? get backStepOffset0 => _summary['backStepOffset0'] as Map<String, dynamic>?;
   num? get exactSeekMedianMs => _summary['exactSeekMedianMs'] as num?;
   int get timeouts => (_summary['timeouts'] as int?) ?? 0;
+  List<String> get notMeasured => [...?(_summary['notMeasured'] as List?)?.cast<String>()];
+  List<String> get engineErrors => [...?(record['engineErrors'] as List?)?.cast<String>()];
 }
 
 /// The JSON Lines file in the app's documents folder. Nothing is uploaded.
@@ -140,16 +159,43 @@ class ResultsLog {
   static Future<ResultsLog> open() async =>
       ResultsLog(File('${(await getApplicationDocumentsDirectory()).path}/Vokoma/engine-benchmark.jsonl'));
 
+  /// Appends [record] as one line. A previous append that was cut off
+  /// (app killed mid-write) leaves a partial line; this one then starts on a
+  /// fresh line so it stays readable.
   Future<void> append(Map<String, Object?> record) async {
     await file.parent.create(recursive: true);
-    await file.writeAsString('${jsonEncode(record)}\n', mode: FileMode.append, flush: true);
+    final out = await file.open(mode: FileMode.append);
+    try {
+      final length = await out.length();
+      var cutOff = false;
+      if (length > 0) {
+        await out.setPosition(length - 1);
+        cutOff = (await out.readByte()) != 0x0a;
+        await out.setPosition(length);
+      }
+      await out.writeString('${cutOff ? '\n' : ''}${jsonEncode(record)}\n');
+      await out.flush();
+    } finally {
+      await out.close();
+    }
   }
 
   Future<String> read() async => await file.exists() ? await file.readAsString() : '';
 
-  /// Newest first.
-  static List<ResultRow> rowsOf(String jsonLines) => [
-    for (final line in const LineSplitter().convert(jsonLines).reversed)
-      if (line.trim().isNotEmpty) ResultRow(jsonDecode(line) as Map<String, dynamic>),
-  ];
+  /// The readable records, newest first, and how many non-empty lines
+  /// could not be read (a cut-off write, or a record of an unknown shape).
+  static (List<ResultRow>, int skipped) rowsOf(String jsonLines) {
+    final rows = <ResultRow>[];
+    var skipped = 0;
+    for (final line in const LineSplitter().convert(jsonLines).reversed) {
+      if (line.trim().isEmpty) continue;
+      final row = ResultRow.tryParse(line);
+      if (row == null) {
+        skipped++;
+      } else {
+        rows.add(row);
+      }
+    }
+    return (rows, skipped);
+  }
 }
