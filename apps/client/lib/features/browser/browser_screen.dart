@@ -143,13 +143,16 @@ class _BrowserScreenState extends State<BrowserScreen> {
           subtitle: Text(
             [formatSize(file.sizeBytes), if (file.duration != null) formatDuration(file.duration!)].join(' · '),
           ),
-          onTap: () => UpdateService.instance.installing
-              ? null
-              : Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => PlayerScreen(api: widget.api, file: file),
-                  ),
-                ),
+          onTap: () {
+            if (UpdateService.instance.installing) return;
+            // Reserve playback before the next frame constructs PlayerScreen.
+            UpdateService.instance.setPlayerOpen(true);
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => PlayerScreen(api: widget.api, file: file),
+              ),
+            );
+          },
         ),
       },
     );

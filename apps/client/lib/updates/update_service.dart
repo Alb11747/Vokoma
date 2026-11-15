@@ -49,10 +49,13 @@ class UpdateService extends ChangeNotifier {
       _directory = Directory('${(await getApplicationSupportDirectory()).path}/updates');
       await _directory.create(recursive: true);
       _ready = true;
+      _busy = true;
       try {
         await _apply(startup: true);
       } catch (error) {
         status = 'Pending update failed: $error';
+      } finally {
+        _busy = false;
       }
       await check();
       _timer = Timer.periodic(const Duration(seconds: 30), (_) async {
@@ -79,10 +82,16 @@ class UpdateService extends ChangeNotifier {
 
   Future<void> configure(UpdateChannel value, InstallPolicy installPolicy) async {
     if (!_ready || _busy || installing) return;
-    await _preferences.setString('updateChannel', value.name);
-    await _preferences.setString('installPolicy', installPolicy.name);
-    channel = value;
-    policy = installPolicy;
+    _busy = true;
+    try {
+      await _preferences.setString('updateChannel', value.name);
+      await _preferences.setString('installPolicy', installPolicy.name);
+      channel = value;
+      policy = installPolicy;
+    } finally {
+      _busy = false;
+    }
+
     notifyListeners();
     await check();
   }

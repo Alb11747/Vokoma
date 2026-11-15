@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'api/api.dart';
 import 'api/token_store.dart';
@@ -23,6 +24,10 @@ Future<void> main() async {
     // the user can still log in, and sees why the old session is gone.
     restoreError = 'Could not read the saved session: $error';
   }
+  HardwareKeyboard.instance.addHandler((_) {
+    UpdateService.instance.interact();
+    return false;
+  });
   unawaited(UpdateService.instance.start());
   runApp(VokomaApp(store: store, initialApi: api, initialError: restoreError));
 }
