@@ -31,6 +31,19 @@ class FakeBenchEngine implements PlayerEngine {
   /// When set, forward steps report the engine's own timeout (false).
   bool forwardTimesOut = false;
 
+  /// Absolute exact seeks to this position time out.
+  Duration? failSeekTo;
+
+  /// Absolute exact seeks to this position land one frame later.
+  Duration? misplaceSeekTo;
+
+  /// Emitted on [errorStream] as each forward step runs.
+  String? errorOnForwardStep;
+
+  final errors = StreamController<String>.broadcast(sync: true);
+  @override
+  Stream<String> get errorStream => errors.stream;
+
   Future<bool> _after(void Function() effect, {bool result = true}) => Future.delayed(delay, () {
     effect();
     return result;
@@ -47,6 +60,7 @@ class FakeBenchEngine implements PlayerEngine {
   @override
   Future<bool> stepForward() {
     calls.add('fwd');
+    if (errorOnForwardStep case final e?) errors.add(e);
     if (forwardTimesOut) return _after(() {}, result: false);
     return _after(() => pos += frame);
   }
@@ -62,6 +76,8 @@ class FakeBenchEngine implements PlayerEngine {
   @override
   Future<bool> seekAndWait(Duration time, {required bool relative, SeekMode mode = SeekMode.exact}) {
     calls.add('seek ${relative ? 'rel' : 'abs'} ${mode.name}');
+    if (!relative && time == failSeekTo) return Completer<bool>().future;
+    if (!relative && time == misplaceSeekTo) return _after(() => pos = time + frame);
     var target = relative ? pos + time : time;
     // Land on the frame grid; keyframe seeks on the 2 s keyframe grid.
     final grid = mode == SeekMode.keyframe ? 2000 : 40;
@@ -95,21 +111,20 @@ void main() {
       expect(TimingStats.of([]).toJson()['medianMs'], isNull);
     });
 
-    test('a step is exact within half a frame of one frame', () {
-      StepLanding back(int fromMs, int toMs) => classifyStep(
-        from: Duration(milliseconds: fromMs),
-        to: Duration(milliseconds: toMs),
-        forward: false,
-        frame: frame,
-      );
-      expect(back(1000, 960), StepLanding.exact);
-      expect(back(1000, 979), StepLanding.exact); // 21 ms: just over half a frame
-      expect(back(1000, 940), StepLanding.exact); // 1.5 frames
-      expect(back(1000, 980), StepLanding.stuck); // exactly half a frame
-      expect(back(1000, 1000), StepLanding.stuck);
-      expect(back(1000, 939), StepLanding.skipped);
-      expect(back(1000, 2016), StepLanding.wrongDirection); // late .ts landing
-      expect(classifyStep(from: Duration.zero, to: frame, forward: true, frame: frame), StepLanding.exact);
+    test('back steps are checked against the real neighbouring frames', () {
+      const ms = Duration(milliseconds: 1);
+      // Variable frame rate: 20 and 80 ms intervals around a nominal 40 ms.
+      final frames = [0, 20, 100, 120, 200].map((t) => ms * t).toList();
+      StepLanding back(int from, int to) => classifyBackStep(frames: frames, from: ms * from, to: ms * to);
+      expect(back(120, 100), StepLanding.exact); // 20 ms back: nominally "stuck"
+      expect(back(100, 20), StepLanding.exact); // 80 ms back: nominally "skipped"
+      expect(back(100, 29), StepLanding.exact); // within half the smaller interval
+      expect(back(100, 100), StepLanding.stuck);
+      expect(back(100, 0), StepLanding.skipped);
+      expect(back(100, 2016), StepLanding.wrongDirection); // late .ts landing
+      expect(back(100, 50), StepLanding.unverified); // between known frames
+      expect(back(0, 0), StepLanding.unverified); // no earlier frame known
+      expect(back(50, 20), StepLanding.unverified); // started off the frames
     });
   });
 
@@ -143,7 +158,8 @@ void main() {
         final back = tests['back_step_1'] as Map<String, Object?>;
         expect(back['n'], 20);
         expect(back['medianMs'], 50.0);
-        expect(back['landings'], {'exact': 20, 'stuck': 0, 'skipped': 0, 'wrongDirection': 0});
+        expect(back['landings'], {'exact': 20, 'stuck': 0, 'skipped': 0, 'wrongDirection': 0, 'unverified': 0});
+        expect((tests['fwd_step_1'] as Map).containsKey('landings'), isFalse);
         expect((tests['seek_far_exact'] as Map)['n'], 10);
         expect((tests['seek_far_exact'] as Map).containsKey('landings'), isFalse);
 
@@ -156,6 +172,8 @@ void main() {
         expect((offset0['exact'] as int) + (offset0['stuck'] as int), 40);
         expect(summary['exactSeekMedianMs'], 50.0);
         expect(summary['timeouts'], 0);
+        expect(summary['notMeasured'], isEmpty);
+        expect(json['engineErrors'], isEmpty);
         expect(json['frameMs'], 40.0);
 
         // The override is applied only around the offset-0 series.
@@ -210,6 +228,55 @@ void main() {
         final fwd = result!.series.firstWhere((s) => s.name == 'fwd_step_1');
         expect(fwd.samplesMs, isEmpty);
         expect(fwd.timeouts, 20);
+      });
+    });
+
+    test('a failed positioning seek marks the series that need it as not measured', () {
+      fakeAsync((async) {
+        // Place 1 is 31 % of 10 min; the ±5 s series start at 50 %.
+        final engine = FakeBenchEngine()..failSeekTo = const Duration(minutes: 5);
+        BenchmarkMeasurements? result;
+        EngineBenchmark(
+          engine,
+          options: const BenchmarkOptions(timeout: Duration(seconds: 1)),
+          elapsed: () => async.elapsed,
+        ).run(mpegTs: false).then((r) => result = r);
+        async.elapse(const Duration(minutes: 5));
+        final json = result!.toJson();
+        final tests = json['tests'] as Map<String, Object?>;
+        expect((tests['seek_back5_exact'] as Map)['notMeasured'], 'positioning seek to 300.000 s timed out');
+        expect((tests['seek_back5_exact'] as Map)['n'], 0);
+        expect((json['summary'] as Map)['notMeasured'], ['seek_fwd5_exact', 'seek_back5_exact', 'seek_back5_keyframe']);
+        expect((tests['back_step_1'] as Map).containsKey('notMeasured'), isFalse);
+      });
+    });
+
+    test('the offset-0 series is not measured unless it starts on the same frame', () {
+      fakeAsync((async) {
+        // fwd_step_1 starts at 186 s and ends 20 frames later.
+        final engine = FakeBenchEngine()..misplaceSeekTo = const Duration(milliseconds: 186800);
+        BenchmarkMeasurements? result;
+        EngineBenchmark(engine, elapsed: () => async.elapsed).run(mpegTs: true).then((r) => result = r);
+        async.elapse(const Duration(minutes: 5));
+        final offset0 = result!.series.firstWhere((s) => s.name == 'back_step_1_offset0');
+        expect(offset0.notMeasured, 'positioning seek to 186.800 s landed at 186.840 s');
+        expect(offset0.samplesMs, isEmpty);
+        expect(engine.calls.where((c) => c.startsWith('offset')), ['offset 0', 'offset null']); // place 2 only
+        final summary = result!.summary()['backStepOffset0'] as Map<String, Object?>;
+        expect(summary['notMeasured'], 1);
+        expect(summary['attempted'], 20);
+      });
+    });
+
+    test('engine errors during the run are kept with the measurements', () {
+      fakeAsync((async) {
+        final engine = FakeBenchEngine()..errorOnForwardStep = 'Connection reset';
+        BenchmarkMeasurements? result;
+        EngineBenchmark(engine, elapsed: () => async.elapsed).run(mpegTs: false).then((r) => result = r);
+        async.elapse(const Duration(minutes: 5));
+        expect(result!.toJson()['engineErrors'], hasLength(40));
+        expect(result!.engineErrors.first, 'Connection reset');
+        expect(engine.errors.hasListener, isFalse);
       });
     });
 
@@ -313,7 +380,8 @@ void main() {
       expect(first['engine'], containsPair('demuxerSeekOffsetSeconds', 3.0));
       expect(first.containsKey('error'), isFalse);
 
-      final rows = ResultsLog.rowsOf(text);
+      final (rows, skipped) = ResultsLog.rowsOf(text);
+      expect(skipped, 0);
       expect(rows.first.error, 'Could not open'); // newest first
       final row = rows.last;
       expect(row.file, 'ep 01.ts');
@@ -325,6 +393,21 @@ void main() {
       expect(row.backStepOffset0, containsPair('timeouts', 1));
       expect(row.exactSeekMedianMs, 300.0);
       expect(row.timeouts, 1);
+    });
+
+    test('a cut-off append does not poison the file', () async {
+      final dir = await Directory.systemTemp.createTemp('vokoma-bench');
+      addTearDown(() => dir.delete(recursive: true));
+      final log = ResultsLog(File('${dir.path}/results.jsonl'));
+      Map<String, Object?> record(int minute) =>
+          benchmarkRecord(time: DateTime.utc(2026, 1, 1, 0, minute), appVersion: '1', device: const {}, file: file);
+      await log.append(record(1));
+      await log.file.writeAsString('{"schema":1,"time":"2026-01-01T00:02', mode: FileMode.append);
+      await log.append(record(3));
+      await log.file.writeAsString('[1, 2]\n{"time": "x", "file": {}}\n', mode: FileMode.append);
+      final (rows, skipped) = ResultsLog.rowsOf(await log.read());
+      expect(rows.map((r) => r.time.minute), [3, 1]);
+      expect(skipped, 3);
     });
 
     test('the benchmark set adds without duplicates and clears', () async {

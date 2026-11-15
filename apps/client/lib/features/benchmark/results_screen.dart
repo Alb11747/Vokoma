@@ -21,7 +21,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
   }();
 
   Future<void> _share(ResultsLog log, String content) async {
-    if (Platform.isAndroid) return Device.shareText(content, subject: 'Vokoma engine benchmark');
+    if (Platform.isAndroid) return Device.shareFile(log.file.path, subject: 'Vokoma engine benchmark');
     await Clipboard.setData(ClipboardData(text: '${log.file.path}\n\n$content'));
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('File path and results copied')));
@@ -38,7 +38,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
         final data = snapshot.data;
         if (data == null) return const Center(child: CircularProgressIndicator());
         final (log, content) = data;
-        final rows = ResultsLog.rowsOf(content);
+        final (rows, skipped) = ResultsLog.rowsOf(content);
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
@@ -53,6 +53,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
             const SizedBox(height: 8),
             SelectableText(log.file.path, style: Theme.of(context).textTheme.bodySmall),
             const SizedBox(height: 8),
+            if (skipped > 0) Text('$skipped unreadable lines skipped (a run was cut off while saving).'),
             if (rows.isEmpty) const Text('No results yet.') else _table(rows),
           ],
         );
@@ -70,6 +71,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
         DataColumn(label: Text('Exact\nback steps')),
         DataColumn(label: Text('Exact seek\nmedian ms')),
         DataColumn(label: Text('Timeouts')),
+        DataColumn(label: Text('Notes')),
       ],
       rows: [
         for (final row in rows) ...[
@@ -81,6 +83,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
               DataCell(Text(_exactness(row.backStep))),
               DataCell(Text(_ms(row.exactSeekMedianMs))),
               DataCell(Text(row.error == null ? '${row.timeouts}' : '')),
+              DataCell(Text(_notes(row))),
             ],
           ),
           if (row.backStepOffset0 case final offset0?)
@@ -92,6 +95,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
                 DataCell(Text(_exactness(offset0))),
                 const DataCell(Text('')),
                 DataCell(Text('${offset0['timeouts']}')),
+                const DataCell(Text('')),
               ],
             ),
         ],
@@ -106,11 +110,17 @@ class _ResultsScreenState extends State<ResultsScreen> {
   /// `38 / 40 (stuck 2)`: exact out of attempted, then any other landings.
   static String _exactness(Map<String, dynamic>? s) {
     if (s == null) return '';
-    if (s['classified'] == 0) return 'frame rate unknown';
+    if (s['classified'] == 0) return s['notMeasured'] == 0 ? '' : 'not measured';
     final other = [
-      for (final k in ['stuck', 'skipped', 'wrongDirection'])
-        if ((s[k] as int) > 0) '${k == 'wrongDirection' ? 'wrong way' : k} ${s[k]}',
+      for (final k in ['stuck', 'skipped', 'wrongDirection', 'unverified'])
+        if (((s[k] as int?) ?? 0) > 0) '${k == 'wrongDirection' ? 'wrong way' : k} ${s[k]}',
     ];
     return '${s['exact']} / ${s['attempted']}${other.isEmpty ? '' : ' (${other.join(', ')})'}';
   }
+
+  /// Series that could not run, and engine errors seen during the run.
+  static String _notes(ResultRow row) => [
+    if (row.notMeasured.isNotEmpty) 'not measured: ${row.notMeasured.join(', ')}',
+    if (row.engineErrors.isNotEmpty) 'engine errors (${row.engineErrors.length}): ${row.engineErrors.first}',
+  ].join('; ');
 }

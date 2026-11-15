@@ -28,38 +28,46 @@ class TimingStats {
 
 double? _round(double? ms) => ms == null ? null : (ms * 10).round() / 10;
 
-/// Where a frame step landed relative to the frame it started on.
+/// Where a back step landed.
 enum StepLanding {
-  /// One frame in the expected direction, within half a frame.
+  /// On the previous frame.
   exact,
 
   /// Within half a frame of where it started: did not move (for back steps
   /// in `.ts`, typically stuck on a keyframe).
   stuck,
 
-  /// More than one and a half frames in the expected direction.
+  /// Earlier than the previous frame.
   skipped,
 
-  /// Moved the other way (for back steps: landed after the start, as a late
-  /// `.ts` seek does).
+  /// Later than where it started (as a late `.ts` seek lands).
   wrongDirection,
+
+  /// Not checkable: the step started or landed off the known frames.
+  unverified,
 }
 
-/// Classifies a step from [from] to [to]. [forward] is the expected
-/// direction; [frame] is one frame's duration.
-StepLanding classifyStep({
-  required Duration from,
-  required Duration to,
-  required bool forward,
-  required Duration frame,
-}) {
-  final moved = (to - from).inMicroseconds * (forward ? 1 : -1);
-  final f = frame.inMicroseconds;
-  final half = f / 2;
-  if (moved.abs() <= half) return StepLanding.stuck;
-  if (moved < 0) return StepLanding.wrongDirection;
-  if (moved <= f + half) return StepLanding.exact;
-  return StepLanding.skipped;
+/// Classifies a back step from [from] to [to] against [frames], the frame
+/// timestamps the forward steps visited over the same range (ascending).
+///
+/// Using real neighbouring timestamps instead of a nominal frame duration
+/// keeps variable frame rate files correct: with 20 and 80 ms intervals a
+/// 40 ms nominal frame would call correct steps stuck or skipped.
+StepLanding classifyBackStep({required List<Duration> frames, required Duration from, required Duration to}) {
+  // Positions of one frame are reported identically; allow rounding only.
+  const same = Duration(milliseconds: 1);
+  final i = frames.indexWhere((f) => (f - from).abs() <= same);
+  if (i <= 0) return StepLanding.unverified;
+  final target = frames[i - 1];
+  final interval = from - target;
+  final below = i >= 2 ? target - frames[i - 2] : interval;
+  final tolerance = (interval < below ? interval : below) ~/ 2;
+  if ((to - target).abs() <= tolerance) return StepLanding.exact;
+  if ((to - from).abs() <= interval ~/ 2) return StepLanding.stuck;
+  if (to > from) return StepLanding.wrongDirection;
+  if (to < target) return StepLanding.skipped;
+  // Between two known frames: the forward steps missed a frame here.
+  return StepLanding.unverified;
 }
 
 /// Counts of each [StepLanding], as written to the results.
