@@ -34,13 +34,20 @@ class MpvEngine implements PlayerEngine {
         _mutedController.add(_muted);
       }),
     );
+    unawaited(
+      _native.observeProperty('seeking', (value) async {
+        _seeking = value == 'yes';
+        _seekingController.add(_seeking);
+      }),
+    );
   }
 
   /// Loads libmpv. Call once before creating an engine.
   static void initialize() => MediaKit.ensureInitialized();
 
-  /// Longest wait for a frame step to show a new frame. A step that moves
-  /// nothing (first or last frame) completes after this.
+  /// How long a frame step may show no sign of work before it counts as one
+  /// that moves nothing (first or last frame). A step still seeking by then
+  /// is waited for to the end; see [frameStepDone].
   static const stepTimeout = Duration(seconds: 3);
 
   late final Player _player;
@@ -51,8 +58,10 @@ class MpvEngine implements PlayerEngine {
   final _stateController = StreamController<EngineState>.broadcast();
   final _mutedController = StreamController<bool>.broadcast();
   final _tracks = StreamController<List<MediaTrack>>.broadcast();
+  final _seekingController = StreamController<bool>.broadcast();
   bool _opened = false;
   bool _muted = false;
+  bool _seeking = false;
   EngineState _state = EngineState.idle;
 
   @override
@@ -82,18 +91,25 @@ class MpvEngine implements PlayerEngine {
       _native.command(seekCommand(offset, relative: true, mode: mode));
 
   @override
-  Future<void> stepForward() => _step('frame-step');
+  Future<void> stepForward() => _step('frame-step', backward: false);
 
   /// Seek-based back step: mpv seeks to the previous keyframe and decodes up
   /// to the frame before. Exact in every benchmark run; reverse playback
   /// mode is deliberately not used (docs/ARCHITECTURE.md, section 3).
   @override
-  Future<void> stepBackward() => _step('frame-back-step');
+  Future<void> stepBackward() => _step('frame-back-step', backward: true);
 
-  Future<void> _step(String command) async {
-    final landed = nextPositionChange(_player.stream.position, _player.state.position, stepTimeout);
+  Future<void> _step(String command, {required bool backward}) async {
+    final done = frameStepDone(
+      backward: backward,
+      positions: _player.stream.position,
+      from: _player.state.position,
+      seeking: _seekingController.stream,
+      isSeeking: () => _seeking,
+      timeout: stepTimeout,
+    );
     await _native.command([command]);
-    await landed;
+    await done;
   }
 
   @override
@@ -142,6 +158,7 @@ class MpvEngine implements PlayerEngine {
     await _stateController.close();
     await _mutedController.close();
     await _tracks.close();
+    await _seekingController.close();
   }
 
   void _emitState() {
@@ -213,20 +230,50 @@ EngineState engineStateOf({
   return playing ? EngineState.playing : EngineState.paused;
 }
 
-/// Completes when [positions] reports a position other than [from], or after
-/// [timeout]. Subscribe before issuing the command that moves the position.
+/// Completes when a frame step has finished. Subscribe before issuing it.
+///
+/// A back step is a seek, and mpv ignores a back step issued while a seek is
+/// running, so it is done only when mpv reports [seeking] off again. Position
+/// changes do not count: playback or an earlier seek can move the position
+/// before the step's own seek ends. A forward step is done when the position
+/// moves outside a seek.
+///
+/// After [timeout] with no completion the step is taken to move nothing
+/// (first or last frame) and completes, unless mpv is still seeking
+/// ([isSeeking]); then it completes when that seek ends, so the next step is
+/// not sent into it.
 @visibleForTesting
-Future<void> nextPositionChange(Stream<Duration> positions, Duration from, Duration timeout) {
+Future<void> frameStepDone({
+  required bool backward,
+  required Stream<Duration> positions,
+  required Duration from,
+  required Stream<bool> seeking,
+  required bool Function() isSeeking,
+  required Duration timeout,
+}) {
   final done = Completer<void>();
-  late final StreamSubscription<Duration> sub;
-  final timer = Timer(timeout, () {
+  var timedOut = false;
+  void finish() {
     if (!done.isCompleted) done.complete();
-  });
-  sub = positions.listen((p) {
-    if (p != from && !done.isCompleted) done.complete();
+  }
+
+  final subscriptions = [
+    seeking.listen((s) {
+      if (!s && (backward || timedOut)) finish();
+    }),
+    if (!backward)
+      positions.listen((p) {
+        if (p != from && !isSeeking()) finish();
+      }),
+  ];
+  final timer = Timer(timeout, () {
+    timedOut = true;
+    if (!isSeeking()) finish();
   });
   return done.future.whenComplete(() {
     timer.cancel();
-    sub.cancel();
+    for (final s in subscriptions) {
+      s.cancel();
+    }
   });
 }
